@@ -16,7 +16,7 @@ def test_uniswap_config():
     """Test UniswapConfig dataclass"""
     print("Testing UniswapConfig...")
 
-    from dex_adapter.config import UniswapConfig
+    from dex_adapter_universal.config import UniswapConfig
 
     config = UniswapConfig()
 
@@ -34,7 +34,7 @@ def test_config_has_uniswap():
     """Test global config includes UniswapConfig"""
     print("Testing global config...")
 
-    from dex_adapter.config import config
+    from dex_adapter_universal.config import config
 
     assert hasattr(config, "uniswap")
     assert config.uniswap.eth_chain_id == 1
@@ -47,7 +47,7 @@ def test_v3_contract_addresses():
     """Test Uniswap V3 contract addresses (Ethereum only)"""
     print("Testing V3 contract addresses...")
 
-    from dex_adapter.protocols.uniswap.api import (
+    from dex_adapter_universal.protocols.uniswap.api import (
         UNISWAP_V3_POSITION_MANAGER_ADDRESSES,
         UNISWAP_V3_FACTORY_ADDRESSES,
     )
@@ -71,7 +71,7 @@ def test_v4_contract_addresses():
     """Test Uniswap V4 contract addresses (Ethereum only)"""
     print("Testing V4 contract addresses...")
 
-    from dex_adapter.protocols.uniswap.api import (
+    from dex_adapter_universal.protocols.uniswap.api import (
         UNISWAP_V4_POOL_MANAGER_ADDRESSES,
         UNISWAP_V4_POSITION_MANAGER_ADDRESSES,
     )
@@ -95,7 +95,7 @@ def test_fee_tiers():
     """Test Uniswap fee tiers"""
     print("Testing fee tiers...")
 
-    from dex_adapter.protocols.uniswap.api import (
+    from dex_adapter_universal.protocols.uniswap.api import (
         UNISWAP_FEE_TIERS,
         TICK_SPACING_BY_FEE,
     )
@@ -118,7 +118,7 @@ def test_native_eth_address():
     """Test native ETH address for V4"""
     print("Testing native ETH address...")
 
-    from dex_adapter.protocols.uniswap.api import NATIVE_ETH_ADDRESS
+    from dex_adapter_universal.protocols.uniswap.api import NATIVE_ETH_ADDRESS
 
     # V4 uses address(0) for native ETH
     assert NATIVE_ETH_ADDRESS == "0x0000000000000000000000000000000000000000"
@@ -130,7 +130,7 @@ def test_adapter_import():
     """Test UniswapAdapter can be imported"""
     print("Testing UniswapAdapter import...")
 
-    from dex_adapter.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
 
     # Test class exists and has expected attributes
     assert UniswapAdapter is not None
@@ -148,7 +148,7 @@ def test_main_package_exports():
     """Test main package exports Uniswap"""
     print("Testing main package exports...")
 
-    from dex_adapter import UniswapAdapter
+    from dex_adapter_universal import UniswapAdapter
 
     assert UniswapAdapter is not None
     assert UniswapAdapter.name == "uniswap"
@@ -160,7 +160,7 @@ def test_module_structure():
     """Test Uniswap module has correct structure"""
     print("Testing module structure...")
 
-    from dex_adapter.protocols import uniswap
+    from dex_adapter_universal.protocols import uniswap
 
     # Check __all__ exports
     assert hasattr(uniswap, '__all__')
@@ -178,7 +178,7 @@ def test_pool_version_enum():
     """Test PoolVersion enum"""
     print("Testing PoolVersion enum...")
 
-    from dex_adapter.protocols.uniswap import PoolVersion
+    from dex_adapter_universal.protocols.uniswap import PoolVersion
 
     assert PoolVersion.V3.value == "v3"
     assert PoolVersion.V4.value == "v4"
@@ -190,7 +190,7 @@ def test_adapter_properties():
     """Test adapter has required properties"""
     print("Testing adapter properties...")
 
-    from dex_adapter.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
 
     # Check class has required properties
     properties = [
@@ -209,7 +209,7 @@ def test_adapter_liquidity_methods():
     """Test adapter has liquidity methods"""
     print("Testing adapter liquidity methods...")
 
-    from dex_adapter.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
 
     # Check class has liquidity methods
     methods = [
@@ -230,7 +230,7 @@ def test_adapter_math_methods():
     """Test adapter has math methods"""
     print("Testing adapter math methods...")
 
-    from dex_adapter.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
 
     # Check class has math methods
     methods = [
@@ -248,7 +248,7 @@ def test_adapter_balance_methods():
     """Test adapter has balance methods"""
     print("Testing adapter balance methods...")
 
-    from dex_adapter.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
 
     methods = ['get_balance', 'get_native_balance', 'get_token_balance']
 
@@ -262,7 +262,7 @@ def test_eth_token_resolution():
     """Test ETH token resolution (used by Uniswap)"""
     print("Testing ETH token resolution...")
 
-    from dex_adapter.types.evm_tokens import (
+    from dex_adapter_universal.types.evm_tokens import (
         resolve_token_address,
         get_token_decimals,
         NATIVE_TOKEN_ADDRESS,
@@ -284,7 +284,7 @@ def test_supported_chains():
     """Test supported chains (Ethereum only)"""
     print("Testing supported chains...")
 
-    from dex_adapter.protocols.uniswap.api import (
+    from dex_adapter_universal.protocols.uniswap.api import (
         UNISWAP_SUPPORTED_CHAINS,
         CHAIN_NAMES,
     )
@@ -301,7 +301,7 @@ def test_v4_action_encoder():
     """Test V4ActionEncoder"""
     print("Testing V4ActionEncoder...")
 
-    from dex_adapter.protocols.uniswap.adapter import V4Actions, V4ActionEncoder
+    from dex_adapter_universal.protocols.uniswap.adapter import V4Actions, V4ActionEncoder
 
     # Test V4Actions constants
     assert V4Actions.INCREASE_LIQUIDITY == 0x00
@@ -341,7 +341,7 @@ def test_v4_mutation_methods():
     """Test V4 mutation methods exist"""
     print("Testing V4 mutation methods...")
 
-    from dex_adapter.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
 
     # Check private V4 methods exist
     private_methods = [

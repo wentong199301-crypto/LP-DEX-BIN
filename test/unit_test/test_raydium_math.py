@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 def test_tick_to_sqrt_price_x64():
     """Test tick to sqrt price conversion"""
-    from dex_adapter.protocols.raydium.math import tick_to_sqrt_price_x64
-    from dex_adapter.protocols.raydium.constants import MIN_TICK, MAX_TICK
+    from dex_adapter_universal.protocols.raydium.math import tick_to_sqrt_price_x64
+    from dex_adapter_universal.protocols.raydium.constants import MIN_TICK, MAX_TICK
 
     print("Testing tick_to_sqrt_price_x64...")
 
@@ -39,7 +39,7 @@ def test_tick_to_sqrt_price_x64():
     assert sqrt_price_max > sqrt_price_min, "Max tick sqrt price should be greater than min"
 
     # Invalid ticks should raise ConfigurationError
-    from dex_adapter.errors import ConfigurationError
+    from dex_adapter_universal.errors import ConfigurationError
     try:
         tick_to_sqrt_price_x64(MIN_TICK - 1)
         assert False, "Should raise for tick below MIN_TICK"
@@ -57,7 +57,7 @@ def test_tick_to_sqrt_price_x64():
 
 def test_sqrt_price_x64_to_price():
     """Test sqrt price to human-readable price conversion"""
-    from dex_adapter.protocols.raydium.math import sqrt_price_x64_to_price
+    from dex_adapter_universal.protocols.raydium.math import sqrt_price_x64_to_price
 
     print("Testing sqrt_price_x64_to_price...")
 
@@ -79,7 +79,7 @@ def test_sqrt_price_x64_to_price():
 
 def test_tick_to_price():
     """Test tick to price conversion"""
-    from dex_adapter.protocols.raydium.math import tick_to_price
+    from dex_adapter_universal.protocols.raydium.math import tick_to_price
 
     print("Testing tick_to_price...")
 
@@ -100,7 +100,7 @@ def test_tick_to_price():
 
 def test_price_to_tick():
     """Test price to tick conversion"""
-    from dex_adapter.protocols.raydium.math import price_to_tick, tick_to_price
+    from dex_adapter_universal.protocols.raydium.math import price_to_tick, tick_to_price
 
     print("Testing price_to_tick...")
 
@@ -124,7 +124,7 @@ def test_price_to_tick():
 
 def test_one_tick_range():
     """Test one tick range calculation"""
-    from dex_adapter.protocols.raydium.math import one_tick_range
+    from dex_adapter_universal.protocols.raydium.math import one_tick_range
 
     print("Testing one_tick_range...")
 
@@ -148,7 +148,7 @@ def test_one_tick_range():
 
 def test_get_token_amount_from_liquidity():
     """Test token amount calculations from liquidity"""
-    from dex_adapter.protocols.raydium.math import (
+    from dex_adapter_universal.protocols.raydium.math import (
         get_token_amount_a_from_liquidity,
         get_token_amount_b_from_liquidity,
         get_amounts_from_liquidity,
@@ -203,7 +203,7 @@ def test_get_token_amount_from_liquidity():
 
 def test_get_liquidity_from_amounts():
     """Test liquidity calculation from amounts"""
-    from dex_adapter.protocols.raydium.math import (
+    from dex_adapter_universal.protocols.raydium.math import (
         get_liquidity_from_amounts,
         get_amounts_from_liquidity,
         tick_to_sqrt_price_x64,
@@ -245,8 +245,8 @@ def test_get_liquidity_from_amounts():
 
 def test_get_tick_array_start_index():
     """Test tick array start index calculation"""
-    from dex_adapter.protocols.raydium.math import get_tick_array_start_index
-    from dex_adapter.protocols.raydium.constants import TICK_ARRAY_SIZE
+    from dex_adapter_universal.protocols.raydium.math import get_tick_array_start_index
+    from dex_adapter_universal.protocols.raydium.constants import TICK_ARRAY_SIZE
 
     print("Testing get_tick_array_start_index...")
 

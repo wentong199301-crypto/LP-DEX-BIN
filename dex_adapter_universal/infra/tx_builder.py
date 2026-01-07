@@ -49,7 +49,7 @@ class TxBuilderConfig:
     Transaction builder runtime configuration
 
     This is a runtime configuration class that allows per-builder overrides
-    while pulling defaults from the global config (dex_adapter.config.TxConfig).
+    while pulling defaults from the global config (dex_adapter_universal.config.TxConfig).
 
     Usage:
         # Use all defaults from environment

@@ -92,7 +92,7 @@ def get_keypair():
 
 def create_client():
     """Create DexClient with live RPC and real wallet"""
-    from dex_adapter import DexClient
+    from dex_adapter_universal import DexClient
 
     rpc_url = get_rpc_url()
     keypair = get_keypair()

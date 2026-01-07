@@ -1,7 +1,7 @@
 """
 Test Errors Module
 
-Tests for dex_adapter.errors package.
+Tests for dex_adapter_universal.errors package.
 """
 
 import sys
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def test_error_code():
     """Test ErrorCode enum"""
-    from dex_adapter.errors import ErrorCode
+    from dex_adapter_universal.errors import ErrorCode
 
     print("Testing ErrorCode...")
 
@@ -28,7 +28,7 @@ def test_error_code():
 
 def test_dex_adapter_error():
     """Test DexAdapterError base class"""
-    from dex_adapter.errors import DexAdapterError, ErrorCode
+    from dex_adapter_universal.errors import DexAdapterError, ErrorCode
 
     print("Testing DexAdapterError...")
 
@@ -48,7 +48,7 @@ def test_dex_adapter_error():
 
 def test_rpc_error():
     """Test RpcError exception"""
-    from dex_adapter.errors import RpcError, ErrorCode
+    from dex_adapter_universal.errors import RpcError, ErrorCode
 
     print("Testing RpcError...")
 
@@ -73,7 +73,7 @@ def test_rpc_error():
 
 def test_slippage_exceeded():
     """Test SlippageExceeded exception"""
-    from dex_adapter.errors import SlippageExceeded
+    from dex_adapter_universal.errors import SlippageExceeded
 
     print("Testing SlippageExceeded...")
 
@@ -92,7 +92,7 @@ def test_slippage_exceeded():
 
 def test_pool_unavailable():
     """Test PoolUnavailable exception"""
-    from dex_adapter.errors import PoolUnavailable
+    from dex_adapter_universal.errors import PoolUnavailable
 
     print("Testing PoolUnavailable...")
 
@@ -110,7 +110,7 @@ def test_pool_unavailable():
 
 def test_insufficient_funds():
     """Test InsufficientFunds exception"""
-    from dex_adapter.errors import InsufficientFunds
+    from dex_adapter_universal.errors import InsufficientFunds
 
     print("Testing InsufficientFunds...")
 
@@ -130,7 +130,7 @@ def test_insufficient_funds():
 
 def test_position_not_found():
     """Test PositionNotFound exception"""
-    from dex_adapter.errors import PositionNotFound
+    from dex_adapter_universal.errors import PositionNotFound
 
     print("Testing PositionNotFound...")
 
@@ -144,7 +144,7 @@ def test_position_not_found():
 
 def test_error_inheritance():
     """Test error class inheritance"""
-    from dex_adapter.errors import (
+    from dex_adapter_universal.errors import (
         DexAdapterError,
         RpcError,
         SlippageExceeded,

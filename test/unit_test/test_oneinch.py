@@ -16,7 +16,7 @@ def test_evm_chain_enum():
     """Test EVMChain enum values"""
     print("Testing EVMChain enum...")
 
-    from dex_adapter.types.evm_tokens import EVMChain
+    from dex_adapter_universal.types.evm_tokens import EVMChain
 
     assert EVMChain.ETH.value == 1
     assert EVMChain.BSC.value == 56
@@ -28,7 +28,7 @@ def test_native_token_address():
     """Test native token address constant"""
     print("Testing native token address...")
 
-    from dex_adapter.types.evm_tokens import NATIVE_TOKEN_ADDRESS
+    from dex_adapter_universal.types.evm_tokens import NATIVE_TOKEN_ADDRESS
 
     # 1inch uses this address for native tokens (ETH/BNB)
     assert NATIVE_TOKEN_ADDRESS == "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
@@ -40,7 +40,7 @@ def test_eth_token_resolution():
     """Test Ethereum token address resolution"""
     print("Testing ETH token resolution...")
 
-    from dex_adapter.types.evm_tokens import (
+    from dex_adapter_universal.types.evm_tokens import (
         resolve_token_address,
         get_token_address,
         NATIVE_TOKEN_ADDRESS,
@@ -66,7 +66,7 @@ def test_bsc_token_resolution():
     """Test BSC token address resolution"""
     print("Testing BSC token resolution...")
 
-    from dex_adapter.types.evm_tokens import (
+    from dex_adapter_universal.types.evm_tokens import (
         resolve_token_address,
         NATIVE_TOKEN_ADDRESS,
     )
@@ -85,7 +85,7 @@ def test_address_passthrough():
     """Test that addresses are passed through unchanged"""
     print("Testing address passthrough...")
 
-    from dex_adapter.types.evm_tokens import resolve_token_address
+    from dex_adapter_universal.types.evm_tokens import resolve_token_address
 
     # Valid addresses should be returned as-is
     addr = "0x1234567890123456789012345678901234567890"
@@ -103,8 +103,8 @@ def test_unknown_token_raises():
     """Test that unknown tokens raise ConfigurationError"""
     print("Testing unknown token error...")
 
-    from dex_adapter.types.evm_tokens import resolve_token_address
-    from dex_adapter.errors import ConfigurationError
+    from dex_adapter_universal.types.evm_tokens import resolve_token_address
+    from dex_adapter_universal.errors import ConfigurationError
 
     try:
         resolve_token_address("UNKNOWN_TOKEN_XYZ", 1)
@@ -125,7 +125,7 @@ def test_token_decimals():
     """Test token decimals lookup"""
     print("Testing token decimals...")
 
-    from dex_adapter.types.evm_tokens import get_token_decimals
+    from dex_adapter_universal.types.evm_tokens import get_token_decimals
 
     # ETH tokens
     assert get_token_decimals("ETH", 1) == 18
@@ -150,7 +150,7 @@ def test_is_native_token():
     """Test native token detection"""
     print("Testing is_native_token...")
 
-    from dex_adapter.types.evm_tokens import is_native_token, NATIVE_TOKEN_ADDRESS
+    from dex_adapter_universal.types.evm_tokens import is_native_token, NATIVE_TOKEN_ADDRESS
 
     assert is_native_token(NATIVE_TOKEN_ADDRESS) is True
     assert is_native_token(NATIVE_TOKEN_ADDRESS.lower()) is True
@@ -164,7 +164,7 @@ def test_get_native_symbol():
     """Test native symbol lookup"""
     print("Testing get_native_symbol...")
 
-    from dex_adapter.types.evm_tokens import get_native_symbol
+    from dex_adapter_universal.types.evm_tokens import get_native_symbol
 
     assert get_native_symbol(1) == "ETH"
     assert get_native_symbol(56) == "BNB"
@@ -177,7 +177,7 @@ def test_evm_token_dataclass():
     """Test EVMToken dataclass"""
     print("Testing EVMToken dataclass...")
 
-    from dex_adapter.types.evm_tokens import EVMToken
+    from dex_adapter_universal.types.evm_tokens import EVMToken
 
     token = EVMToken(
         address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
@@ -208,7 +208,7 @@ def test_oneinch_config():
     """Test OneInchConfig dataclass"""
     print("Testing OneInchConfig...")
 
-    from dex_adapter.config import OneInchConfig
+    from dex_adapter_universal.config import OneInchConfig
 
     config = OneInchConfig()
 
@@ -226,7 +226,7 @@ def test_config_has_oneinch():
     """Test global config includes OneInchConfig"""
     print("Testing global config...")
 
-    from dex_adapter.config import config
+    from dex_adapter_universal.config import config
 
     assert hasattr(config, "oneinch")
     assert config.oneinch.eth_chain_id == 1
@@ -240,7 +240,7 @@ def test_imports():
     print("Testing imports...")
 
     # Types
-    from dex_adapter.types.evm_tokens import (
+    from dex_adapter_universal.types.evm_tokens import (
         EVMChain,
         EVMToken,
         NATIVE_TOKEN_ADDRESS,
@@ -251,7 +251,7 @@ def test_imports():
     )
 
     # Config
-    from dex_adapter.config import OneInchConfig, config
+    from dex_adapter_universal.config import OneInchConfig, config
 
     print("  imports: PASSED")
 
@@ -260,7 +260,7 @@ def test_main_package_exports():
     """Test main package exports"""
     print("Testing main package exports...")
 
-    from dex_adapter import (
+    from dex_adapter_universal import (
         EVMChain,
         EVMToken,
         NATIVE_TOKEN_ADDRESS,

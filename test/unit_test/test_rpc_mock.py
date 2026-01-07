@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 def test_rpc_config_defaults():
     """Test RpcClientConfig default values from global config"""
-    from dex_adapter.infra.rpc import RpcClientConfig
+    from dex_adapter_universal.infra.rpc import RpcClientConfig
 
     print("Testing RpcClientConfig defaults...")
 
@@ -31,7 +31,7 @@ def test_rpc_config_defaults():
 
 def test_rpc_config_override():
     """Test RpcClientConfig with overrides"""
-    from dex_adapter.infra.rpc import RpcClientConfig
+    from dex_adapter_universal.infra.rpc import RpcClientConfig
 
     print("Testing RpcClientConfig override...")
 
@@ -53,7 +53,7 @@ def test_rpc_client_init():
     print("Testing RpcClient init...")
 
     try:
-        from dex_adapter.infra.rpc import RpcClient, RpcClientConfig
+        from dex_adapter_universal.infra.rpc import RpcClient, RpcClientConfig
 
         # Single endpoint
         client = RpcClient("https://api.mainnet-beta.solana.com")
@@ -67,7 +67,7 @@ def test_rpc_client_init():
         assert client.endpoint == "https://primary.example.com"
 
         # Empty endpoints should raise ConfigurationError
-        from dex_adapter.errors import ConfigurationError
+        from dex_adapter_universal.errors import ConfigurationError
         try:
             RpcClient([])
             assert False, "Should raise for empty endpoints"
@@ -90,7 +90,7 @@ def test_rpc_call_success():
 
     try:
         import httpx
-        from dex_adapter.infra.rpc import RpcClient
+        from dex_adapter_universal.infra.rpc import RpcClient
 
         # Create mock response
         mock_response = Mock()
@@ -123,8 +123,8 @@ def test_rpc_call_error():
 
     try:
         import httpx
-        from dex_adapter.infra.rpc import RpcClient
-        from dex_adapter.errors import RpcError
+        from dex_adapter_universal.infra.rpc import RpcClient
+        from dex_adapter_universal.errors import RpcError
 
         # Create mock error response
         mock_response = Mock()
@@ -157,8 +157,8 @@ def test_rpc_rate_limit():
 
     try:
         import httpx
-        from dex_adapter.infra.rpc import RpcClient, RpcClientConfig
-        from dex_adapter.errors import RpcError
+        from dex_adapter_universal.infra.rpc import RpcClient, RpcClientConfig
+        from dex_adapter_universal.errors import RpcError
 
         # Create mock rate limit response, then success
         rate_limit_response = Mock()
@@ -194,8 +194,8 @@ def test_rpc_timeout():
 
     try:
         import httpx
-        from dex_adapter.infra.rpc import RpcClient, RpcClientConfig
-        from dex_adapter.errors import RpcError
+        from dex_adapter_universal.infra.rpc import RpcClient, RpcClientConfig
+        from dex_adapter_universal.errors import RpcError
 
         with patch.object(httpx.Client, 'post', side_effect=httpx.TimeoutException("Timeout")):
             config = RpcClientConfig(timeout_seconds=1.0, max_retries=1, retry_delay_seconds=0.01)
@@ -221,8 +221,8 @@ def test_rpc_endpoint_rotation():
 
     try:
         import httpx
-        from dex_adapter.infra.rpc import RpcClient, RpcClientConfig
-        from dex_adapter.errors import RpcError
+        from dex_adapter_universal.infra.rpc import RpcClient, RpcClientConfig
+        from dex_adapter_universal.errors import RpcError
 
         # First endpoint fails, second succeeds
         fail_response = Mock()
@@ -261,7 +261,7 @@ def test_get_account_info():
 
     try:
         import httpx
-        from dex_adapter.infra.rpc import RpcClient
+        from dex_adapter_universal.infra.rpc import RpcClient
 
         mock_response = Mock()
         mock_response.status_code = 200
@@ -299,7 +299,7 @@ def test_get_account_info_not_found():
 
     try:
         import httpx
-        from dex_adapter.infra.rpc import RpcClient
+        from dex_adapter_universal.infra.rpc import RpcClient
 
         mock_response = Mock()
         mock_response.status_code = 200

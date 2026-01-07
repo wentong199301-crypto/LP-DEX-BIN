@@ -49,8 +49,8 @@ def skip_if_no_config():
 
 def create_adapter():
     """Create UniswapAdapter with real RPC and wallet"""
-    from dex_adapter.protocols.uniswap import UniswapAdapter
-    from dex_adapter.infra.evm_signer import EVMSigner
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.infra.evm_signer import EVMSigner
 
     signer = EVMSigner.from_env()
     return UniswapAdapter(chain_id=1, signer=signer)
@@ -114,7 +114,7 @@ def test_open_position_uniswap(adapter):
         print(f"  SKIPPED: Insufficient ETH balance (need {MIN_ETH_BALANCE})")
         return None
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = adapter.get_pool("WETH", "USDC", fee=3000, version="v3")
     if not pool:
@@ -261,7 +261,7 @@ def test_full_lifecycle_uniswap(adapter):
         print(f"  SKIPPED: Insufficient ETH balance (need {MIN_ETH_BALANCE})")
         return
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = adapter.get_pool("WETH", "USDC", fee=3000, version="v3")
     if not pool:

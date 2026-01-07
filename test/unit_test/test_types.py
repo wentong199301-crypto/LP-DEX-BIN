@@ -1,7 +1,7 @@
 """
 Test Types Module
 
-Tests for dex_adapter.types package.
+Tests for dex_adapter_universal.types package.
 """
 
 import sys
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def test_token():
     """Test Token dataclass"""
-    from dex_adapter.types import Token
+    from dex_adapter_universal.types import Token
 
     print("Testing Token...")
 
@@ -43,7 +43,7 @@ def test_token():
 
 def test_pool():
     """Test Pool dataclass"""
-    from dex_adapter.types import Pool, Token
+    from dex_adapter_universal.types import Pool, Token
 
     print("Testing Pool...")
 
@@ -74,7 +74,7 @@ def test_pool():
 
 def test_position():
     """Test Position dataclass"""
-    from dex_adapter.types import Position, Pool, Token
+    from dex_adapter_universal.types import Position, Pool, Token
     from datetime import datetime
 
     print("Testing Position...")
@@ -120,7 +120,7 @@ def test_position():
 
 def test_price_range():
     """Test PriceRange dataclass"""
-    from dex_adapter.types import PriceRange, RangeMode
+    from dex_adapter_universal.types import PriceRange, RangeMode
 
     print("Testing PriceRange...")
 
@@ -151,7 +151,7 @@ def test_price_range():
 
 def test_tx_result():
     """Test TxResult dataclass"""
-    from dex_adapter.types import TxResult, TxStatus
+    from dex_adapter_universal.types import TxResult, TxStatus
 
     print("Testing TxResult...")
 
@@ -177,7 +177,7 @@ def test_tx_result():
 
 def test_quote_result():
     """Test QuoteResult dataclass"""
-    from dex_adapter.types import QuoteResult
+    from dex_adapter_universal.types import QuoteResult
     from decimal import Decimal
 
     print("Testing QuoteResult...")

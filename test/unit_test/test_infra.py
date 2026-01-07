@@ -1,7 +1,7 @@
 """
 Test Infrastructure Module
 
-Tests for dex_adapter.infra package (RPC, Signer, TxBuilder).
+Tests for dex_adapter_universal.infra package (RPC, Signer, TxBuilder).
 """
 
 import sys
@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def test_rpc_config():
     """Test RpcClientConfig dataclass"""
-    from dex_adapter.infra import RpcClientConfig
+    from dex_adapter_universal.infra import RpcClientConfig
 
     print("Testing RpcClientConfig...")
 
@@ -37,7 +37,7 @@ def test_rpc_config():
 
 def test_rpc_client_init():
     """Test RpcClient initialization"""
-    from dex_adapter.infra import RpcClient, RpcClientConfig
+    from dex_adapter_universal.infra import RpcClient, RpcClientConfig
 
     print("Testing RpcClient Init...")
 
@@ -62,7 +62,7 @@ def test_rpc_client_init():
 
 def test_signer_protocol():
     """Test Signer protocol"""
-    from dex_adapter.infra import Signer
+    from dex_adapter_universal.infra import Signer
 
     print("Testing Signer Protocol...")
 
@@ -76,7 +76,7 @@ def test_signer_protocol():
 
 def test_local_signer():
     """Test LocalSigner"""
-    from dex_adapter.infra import LocalSigner
+    from dex_adapter_universal.infra import LocalSigner
 
     print("Testing LocalSigner...")
 
@@ -96,7 +96,7 @@ def test_local_signer():
 
 def test_create_signer():
     """Test create_signer factory"""
-    from dex_adapter.infra import create_signer, LocalSigner
+    from dex_adapter_universal.infra import create_signer, LocalSigner
 
     print("Testing create_signer...")
 
@@ -114,7 +114,7 @@ def test_create_signer():
 
 def test_tx_builder_init():
     """Test TxBuilder initialization"""
-    from dex_adapter.infra import TxBuilder, RpcClient
+    from dex_adapter_universal.infra import TxBuilder, RpcClient
 
     print("Testing TxBuilder Init...")
 
@@ -124,7 +124,7 @@ def test_tx_builder_init():
     # Create signer
     try:
         from solders.keypair import Keypair
-        from dex_adapter.infra import LocalSigner
+        from dex_adapter_universal.infra import LocalSigner
         signer = LocalSigner(Keypair())
 
         builder = TxBuilder(rpc, signer)
@@ -138,7 +138,7 @@ def test_tx_builder_init():
 
 def test_tx_config():
     """Test TxBuilderConfig dataclass"""
-    from dex_adapter.infra import TxBuilderConfig
+    from dex_adapter_universal.infra import TxBuilderConfig
 
     print("Testing TxBuilderConfig...")
 

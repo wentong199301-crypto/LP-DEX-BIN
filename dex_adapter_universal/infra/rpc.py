@@ -34,7 +34,7 @@ class RpcClientConfig:
     RPC client runtime configuration
 
     This is a runtime configuration class that allows per-client overrides
-    while pulling defaults from the global config (dex_adapter.config.RpcConfig).
+    while pulling defaults from the global config (dex_adapter_universal.config.RpcConfig).
 
     Usage:
         # Use all defaults from environment

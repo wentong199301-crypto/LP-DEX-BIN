@@ -16,7 +16,7 @@ def test_pancakeswap_config():
     """Test PancakeSwapConfig dataclass"""
     print("Testing PancakeSwapConfig...")
 
-    from dex_adapter.config import PancakeSwapConfig
+    from dex_adapter_universal.config import PancakeSwapConfig
 
     config = PancakeSwapConfig()
 
@@ -34,7 +34,7 @@ def test_config_has_pancakeswap():
     """Test global config includes PancakeSwapConfig"""
     print("Testing global config...")
 
-    from dex_adapter.config import config
+    from dex_adapter_universal.config import config
 
     assert hasattr(config, "pancakeswap")
     assert config.pancakeswap.bsc_chain_id == 56
@@ -47,7 +47,7 @@ def test_v3_contract_addresses():
     """Test PancakeSwap V3 contract addresses (BSC only)"""
     print("Testing V3 contract addresses...")
 
-    from dex_adapter.protocols.pancakeswap.api import (
+    from dex_adapter_universal.protocols.pancakeswap.api import (
         PANCAKESWAP_POSITION_MANAGER_ADDRESSES,
         PANCAKESWAP_FACTORY_ADDRESSES,
         PANCAKESWAP_SUPPORTED_CHAINS,
@@ -77,7 +77,7 @@ def test_fee_tiers():
     """Test PancakeSwap V3 fee tiers"""
     print("Testing fee tiers...")
 
-    from dex_adapter.protocols.pancakeswap.api import (
+    from dex_adapter_universal.protocols.pancakeswap.api import (
         PANCAKESWAP_FEE_TIERS,
         TICK_SPACING_BY_FEE,
     )
@@ -100,7 +100,7 @@ def test_pancakeswap_adapter_import():
     """Test PancakeSwapAdapter can be imported"""
     print("Testing PancakeSwapAdapter import...")
 
-    from dex_adapter.protocols.pancakeswap import PancakeSwapAdapter
+    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
 
     # Test class exists and has expected attributes
     assert PancakeSwapAdapter is not None
@@ -118,7 +118,7 @@ def test_main_package_exports():
     """Test main package exports PancakeSwap"""
     print("Testing main package exports...")
 
-    from dex_adapter import PancakeSwapAdapter
+    from dex_adapter_universal import PancakeSwapAdapter
 
     assert PancakeSwapAdapter is not None
     assert PancakeSwapAdapter.name == "pancakeswap"
@@ -130,7 +130,7 @@ def test_bsc_token_resolution():
     """Test BSC token resolution (used by PancakeSwap)"""
     print("Testing BSC token resolution for PancakeSwap...")
 
-    from dex_adapter.types.evm_tokens import (
+    from dex_adapter_universal.types.evm_tokens import (
         resolve_token_address,
         get_token_decimals,
         NATIVE_TOKEN_ADDRESS,
@@ -155,7 +155,7 @@ def test_erc20_abi_defined():
     """Test ERC20 ABI is defined in adapter"""
     print("Testing ERC20 ABI...")
 
-    from dex_adapter.protocols.pancakeswap.adapter import ERC20_ABI
+    from dex_adapter_universal.protocols.pancakeswap.adapter import ERC20_ABI
 
     assert ERC20_ABI is not None
     assert len(ERC20_ABI) >= 2
@@ -172,7 +172,7 @@ def test_v3_abis_defined():
     """Test V3 ABIs are defined in adapter"""
     print("Testing V3 ABIs...")
 
-    from dex_adapter.protocols.pancakeswap.adapter import (
+    from dex_adapter_universal.protocols.pancakeswap.adapter import (
         POSITION_MANAGER_ABI,
         FACTORY_ABI,
         POOL_ABI,
@@ -208,7 +208,7 @@ def test_chain_name_property():
     """Test chain name resolution"""
     print("Testing chain name resolution...")
 
-    from dex_adapter.protocols.pancakeswap.adapter import PancakeSwapAdapter
+    from dex_adapter_universal.protocols.pancakeswap.adapter import PancakeSwapAdapter
 
     assert hasattr(PancakeSwapAdapter, 'chain_name')
 
@@ -219,7 +219,7 @@ def test_protocol_module_structure():
     """Test PancakeSwap module has correct structure"""
     print("Testing module structure...")
 
-    from dex_adapter.protocols import pancakeswap
+    from dex_adapter_universal.protocols import pancakeswap
 
     # Check __all__ exports
     assert hasattr(pancakeswap, '__all__')
@@ -238,7 +238,7 @@ def test_adapter_properties():
     """Test adapter has required properties"""
     print("Testing adapter properties...")
 
-    from dex_adapter.protocols.pancakeswap import PancakeSwapAdapter
+    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
 
     # Check class has required properties
     properties = [
@@ -256,7 +256,7 @@ def test_adapter_liquidity_methods():
     """Test adapter has liquidity methods"""
     print("Testing adapter liquidity methods...")
 
-    from dex_adapter.protocols.pancakeswap import PancakeSwapAdapter
+    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
 
     # Check class has liquidity methods
     methods = [
@@ -276,7 +276,7 @@ def test_adapter_math_methods():
     """Test adapter has V3 math methods"""
     print("Testing adapter math methods...")
 
-    from dex_adapter.protocols.pancakeswap import PancakeSwapAdapter
+    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
 
     # Check class has math methods
     methods = [
@@ -294,7 +294,7 @@ def test_adapter_balance_methods():
     """Test adapter has balance methods"""
     print("Testing adapter balance methods...")
 
-    from dex_adapter.protocols.pancakeswap import PancakeSwapAdapter
+    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
 
     # Check class has balance methods
     methods = ['get_balance', 'get_native_balance', 'get_token_balance']

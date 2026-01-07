@@ -66,7 +66,7 @@ def skip_if_no_evm_signer():
 
 def create_evm_signer():
     """Create EVM signer from environment"""
-    from dex_adapter.infra.evm_signer import EVMSigner
+    from dex_adapter_universal.infra.evm_signer import EVMSigner
     return EVMSigner.from_env()
 
 
@@ -176,8 +176,8 @@ def test_swap_eth():
         pytest.skip(skip_msg)
 
     # Import required modules
-    from dex_adapter import SwapModule, Chain
-    from dex_adapter.protocols.oneinch import OneInchAdapter
+    from dex_adapter_universal import SwapModule, Chain
+    from dex_adapter_universal.protocols.oneinch import OneInchAdapter
 
     # Create signer if available
     signer = None
@@ -284,8 +284,8 @@ def test_swap_bsc():
         pytest.skip(skip_msg)
 
     # Import required modules
-    from dex_adapter import SwapModule, Chain
-    from dex_adapter.protocols.oneinch import OneInchAdapter
+    from dex_adapter_universal import SwapModule, Chain
+    from dex_adapter_universal.protocols.oneinch import OneInchAdapter
 
     # Create signer if available
     signer = None
@@ -400,7 +400,7 @@ def test_quote_eth():
         print(f"  SKIPPED: {skip_msg}")
         pytest.skip(skip_msg)
 
-    from dex_adapter import SwapModule
+    from dex_adapter_universal import SwapModule
     swap = SwapModule()
     quote = swap.quote("ETH", "USDC", Decimal("1.0"), chain="eth")
 
@@ -418,7 +418,7 @@ def test_quote_bsc():
         print(f"  SKIPPED: {skip_msg}")
         pytest.skip(skip_msg)
 
-    from dex_adapter import SwapModule
+    from dex_adapter_universal import SwapModule
     swap = SwapModule()
     quote = swap.quote("BNB", "USDC", Decimal("1.0"), chain="bsc")
 

@@ -7,9 +7,9 @@ Automatically detects pool version and routes calls accordingly.
 Note: Swap operations should use 1inch adapter instead.
 
 Usage:
-    from dex_adapter.protocols.uniswap import UniswapAdapter
-    from dex_adapter.infra.evm_signer import EVMSigner
-    from dex_adapter.types.price import PriceRange
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.infra.evm_signer import EVMSigner
+    from dex_adapter_universal.types.price import PriceRange
 
     # Create signer
     signer = EVMSigner.from_env()

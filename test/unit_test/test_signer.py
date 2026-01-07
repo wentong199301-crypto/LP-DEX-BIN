@@ -17,7 +17,7 @@ def test_local_signer_from_base58():
     print("Testing LocalSigner from base58...")
 
     try:
-        from dex_adapter.infra.solana_signer import LocalSigner
+        from dex_adapter_universal.infra.solana_signer import LocalSigner
 
         # Valid base58 private key (64 bytes)
         # This is a test keypair - DO NOT use in production
@@ -45,7 +45,7 @@ def test_local_signer_sign():
     print("Testing LocalSigner sign...")
 
     try:
-        from dex_adapter.infra.solana_signer import LocalSigner
+        from dex_adapter_universal.infra.solana_signer import LocalSigner
         from solders.keypair import Keypair
 
         # Generate a new keypair for testing
@@ -73,7 +73,7 @@ def test_local_signer_sign_transaction():
     print("Testing LocalSigner sign_transaction...")
 
     try:
-        from dex_adapter.infra.solana_signer import LocalSigner
+        from dex_adapter_universal.infra.solana_signer import LocalSigner
         from solders.keypair import Keypair
         from solders.pubkey import Pubkey
         from solders.hash import Hash
@@ -122,7 +122,7 @@ def test_signer_factory():
     print("Testing signer factory...")
 
     try:
-        from dex_adapter.infra.solana_signer import create_signer, LocalSigner
+        from dex_adapter_universal.infra.solana_signer import create_signer, LocalSigner
         from solders.keypair import Keypair
 
         # Test creating a local signer via factory with keypair
@@ -146,7 +146,7 @@ def test_keypair_loading():
     print("Testing keypair loading...")
 
     try:
-        from dex_adapter.infra.solana_signer import LocalSigner
+        from dex_adapter_universal.infra.solana_signer import LocalSigner
         import tempfile
         import os
 

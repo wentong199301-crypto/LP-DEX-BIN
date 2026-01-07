@@ -23,7 +23,7 @@ def _load_env_file():
         return
 
     # Look for .env in common locations
-    current = Path(__file__).parent.parent  # dex_adapter package parent
+    current = Path(__file__).parent.parent  # dex_adapter_universal package parent
     env_file = current / ".env"
 
     if env_file.exists():
@@ -196,7 +196,7 @@ class Config:
     Loads all settings from environment variables and .env file.
 
     Usage:
-        from dex_adapter.config import config
+        from dex_adapter_universal.config import config
 
         print(config.rpc.url)
         print(config.jupiter.quote_url)

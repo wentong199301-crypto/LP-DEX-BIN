@@ -5,9 +5,9 @@ Provides liquidity management functionality via PancakeSwap V3 for BSC only.
 Note: Swap operations should use 1inch adapter instead.
 
 Usage:
-    from dex_adapter.protocols.pancakeswap import PancakeSwapAdapter
-    from dex_adapter.infra.evm_signer import EVMSigner
-    from dex_adapter.types.price import PriceRange
+    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
+    from dex_adapter_universal.infra.evm_signer import EVMSigner
+    from dex_adapter_universal.types.price import PriceRange
 
     # Create signer
     signer = EVMSigner.from_env()

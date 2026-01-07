@@ -1,7 +1,7 @@
 """
 Test Protocols Module
 
-Tests for dex_adapter.protocols package.
+Tests for dex_adapter_universal.protocols package.
 """
 
 import sys
@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def test_protocol_registry():
     """Test ProtocolRegistry"""
-    from dex_adapter.protocols import ProtocolRegistry
+    from dex_adapter_universal.protocols import ProtocolRegistry
 
     print("Testing ProtocolRegistry...")
 
@@ -28,8 +28,8 @@ def test_protocol_registry():
 
 def test_raydium_adapter_registration():
     """Test RaydiumAdapter is registered"""
-    from dex_adapter.protocols import ProtocolRegistry
-    from dex_adapter.protocols.raydium import RaydiumAdapter
+    from dex_adapter_universal.protocols import ProtocolRegistry
+    from dex_adapter_universal.protocols.raydium import RaydiumAdapter
 
     print("Testing Raydium Registration...")
 
@@ -42,8 +42,8 @@ def test_raydium_adapter_registration():
 
 def test_meteora_adapter_registration():
     """Test MeteoraAdapter is registered"""
-    from dex_adapter.protocols import ProtocolRegistry
-    from dex_adapter.protocols.meteora import MeteoraAdapter
+    from dex_adapter_universal.protocols import ProtocolRegistry
+    from dex_adapter_universal.protocols.meteora import MeteoraAdapter
 
     print("Testing Meteora Registration...")
 
@@ -55,7 +55,7 @@ def test_meteora_adapter_registration():
 
 def test_raydium_math():
     """Test Raydium math utilities"""
-    from dex_adapter.protocols.raydium.math import (
+    from dex_adapter_universal.protocols.raydium.math import (
         tick_to_sqrt_price_x64,
         sqrt_price_x64_to_price,
         tick_to_price,
@@ -92,7 +92,7 @@ def test_raydium_math():
 
 def test_meteora_math():
     """Test Meteora math utilities"""
-    from dex_adapter.protocols.meteora.math import (
+    from dex_adapter_universal.protocols.meteora.math import (
         bin_id_to_price,
         price_to_bin_id,
         one_bin_range,
@@ -122,7 +122,7 @@ def test_meteora_math():
 
 def test_jupiter_adapter_init():
     """Test JupiterAdapter initialization"""
-    from dex_adapter.protocols.jupiter import JupiterAdapter
+    from dex_adapter_universal.protocols.jupiter import JupiterAdapter
 
     print("Testing Jupiter Adapter...")
 
@@ -136,7 +136,7 @@ def test_jupiter_adapter_init():
 
 def test_protocol_adapter_interface():
     """Test ProtocolAdapter ABC interface"""
-    from dex_adapter.protocols.base import ProtocolAdapter
+    from dex_adapter_universal.protocols.base import ProtocolAdapter
 
     print("Testing ProtocolAdapter Interface...")
 

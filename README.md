@@ -25,8 +25,8 @@ pip install -e .
 ## 项目结构
 
 ```
-dex_adapter/
-├── dex_adapter/              # 主包
+dex_adapter_universal/
+├── dex_adapter_universal/              # 主包
 │   ├── __init__.py           # 公共导出
 │   ├── client.py             # DexClient 入口
 │   ├── config.py             # 配置管理
@@ -75,7 +75,7 @@ dex_adapter/
 
 ```python
 from decimal import Decimal
-from dex_adapter import DexClient, PriceRange
+from dex_adapter_universal import DexClient, PriceRange
 
 # 使用密钥文件初始化客户端
 client = DexClient(
@@ -111,7 +111,7 @@ result = client.liquidity.open(
 
 ```python
 from decimal import Decimal
-from dex_adapter import SwapModule, EVMSigner
+from dex_adapter_universal import SwapModule, EVMSigner
 
 # 从私钥创建 EVM 签名器
 signer = EVMSigner.from_env()  # 使用 EVM_PRIVATE_KEY 环境变量
@@ -142,7 +142,7 @@ result = swap.swap(
 ### 多链交换
 
 ```python
-from dex_adapter import DexClient, SwapModule, EVMSigner
+from dex_adapter_universal import DexClient, SwapModule, EVMSigner
 
 # 初始化所有链
 client = DexClient(
@@ -221,7 +221,7 @@ positions = client.liquidity.positions(pool_address)
 
 ### PriceRange（价格范围）
 ```python
-from dex_adapter import PriceRange
+from dex_adapter_universal import PriceRange
 
 PriceRange.one_tick()              # 最窄范围
 PriceRange.percent(0.02)           # +/- 2%
@@ -231,7 +231,7 @@ PriceRange.absolute(95.0, 105.0)   # 绝对价格
 
 ### 核心类型
 ```python
-from dex_adapter import Token, Pool, Position, TxResult, QuoteResult
+from dex_adapter_universal import Token, Pool, Position, TxResult, QuoteResult
 
 # TxResult
 result.status       # TxStatus.SUCCESS, FAILED, PENDING, TIMEOUT
@@ -247,7 +247,7 @@ quote.price_impact_percent
 ## 错误处理
 
 ```python
-from dex_adapter.errors import (
+from dex_adapter_universal.errors import (
     DexAdapterError,    # 基础异常
     RpcError,           # RPC 问题
     SlippageExceeded,   # 滑点过高

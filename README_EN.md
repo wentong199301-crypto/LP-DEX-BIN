@@ -25,8 +25,8 @@ Dependencies:
 ## Project Structure
 
 ```
-dex_adapter/
-├── dex_adapter/              # Main package
+dex_adapter_universal/
+├── dex_adapter_universal/              # Main package
 │   ├── __init__.py           # Public exports
 │   ├── client.py             # DexClient entry point
 │   ├── config.py             # Configuration management
@@ -75,7 +75,7 @@ dex_adapter/
 
 ```python
 from decimal import Decimal
-from dex_adapter import DexClient, PriceRange
+from dex_adapter_universal import DexClient, PriceRange
 
 # Initialize client with keypair file
 client = DexClient(
@@ -111,7 +111,7 @@ result = client.liquidity.open_position(
 
 ```python
 from decimal import Decimal
-from dex_adapter import SwapModule, EVMSigner
+from dex_adapter_universal import SwapModule, EVMSigner
 
 # Create EVM signer from private key
 signer = EVMSigner.from_env()  # Uses EVM_PRIVATE_KEY env var
@@ -142,7 +142,7 @@ result = swap.swap(
 ### Multi-Chain Swaps
 
 ```python
-from dex_adapter import DexClient, SwapModule, EVMSigner
+from dex_adapter_universal import DexClient, SwapModule, EVMSigner
 
 # Initialize for all chains
 client = DexClient(
@@ -221,7 +221,7 @@ positions = client.liquidity.positions(pool_address)
 
 ### PriceRange
 ```python
-from dex_adapter import PriceRange
+from dex_adapter_universal import PriceRange
 
 PriceRange.one_tick()              # Narrowest range
 PriceRange.percent(0.02)           # +/- 2%
@@ -231,7 +231,7 @@ PriceRange.absolute(95.0, 105.0)   # Absolute prices
 
 ### Core Types
 ```python
-from dex_adapter import Token, Pool, Position, TxResult, QuoteResult
+from dex_adapter_universal import Token, Pool, Position, TxResult, QuoteResult
 
 # TxResult
 result.status       # TxStatus.SUCCESS, FAILED, PENDING, TIMEOUT
@@ -247,7 +247,7 @@ quote.price_impact_percent
 ## Error Handling
 
 ```python
-from dex_adapter.errors import (
+from dex_adapter_universal.errors import (
     DexAdapterError,    # Base exception
     RpcError,           # RPC issues
     SlippageExceeded,   # Slippage too high

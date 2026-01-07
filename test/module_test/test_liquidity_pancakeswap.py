@@ -50,8 +50,8 @@ def skip_if_no_config():
 
 def create_adapter():
     """Create PancakeSwapAdapter with real RPC and wallet"""
-    from dex_adapter.protocols.pancakeswap import PancakeSwapAdapter
-    from dex_adapter.infra.evm_signer import EVMSigner
+    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
+    from dex_adapter_universal.infra.evm_signer import EVMSigner
 
     signer = EVMSigner.from_env()
     return PancakeSwapAdapter(chain_id=56, signer=signer)
@@ -113,7 +113,7 @@ def test_open_position_pancakeswap(adapter):
         print(f"  SKIPPED: Insufficient BNB balance (need {MIN_BNB_BALANCE})")
         return None
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = adapter.get_pool("WBNB", "USDT", fee=2500)
     if not pool:
@@ -260,7 +260,7 @@ def test_full_lifecycle_pancakeswap(adapter):
         print(f"  SKIPPED: Insufficient BNB balance (need {MIN_BNB_BALANCE})")
         return
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = adapter.get_pool("WBNB", "USDT", fee=2500)
     if not pool:

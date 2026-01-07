@@ -55,7 +55,7 @@ def test_open_position_meteora(client):
     print(f"  SOL balance: {sol_balance}")
     print(f"  USDC balance: {usdc_balance}")
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = client.market.pool(METEORA_SOL_USDC_POOL, dex="meteora")
     print(f"  Pool: {pool.address[:16]}...")
@@ -89,7 +89,7 @@ def test_open_position_one_bin_meteora(client):
     print(f"  SOL balance: {sol_balance}")
     print(f"  USDC balance: {usdc_balance}")
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = client.market.pool(METEORA_SOL_USDC_POOL, dex="meteora")
 
@@ -233,7 +233,7 @@ def test_full_lifecycle_meteora(client):
     print(f"  SOL balance: {sol_balance}")
     print(f"  USDC balance: {usdc_balance}")
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = client.market.pool(METEORA_SOL_USDC_POOL, dex="meteora")
     print(f"  Pool: {pool.address[:16]}...")

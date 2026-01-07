@@ -71,7 +71,7 @@ def test_open_position_raydium(client):
     print(f"  SOL balance: {sol_balance}")
     print(f"  USDC balance: {usdc_balance}")
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = client.market.pool(RAYDIUM_SOL_USDC_POOL, dex="raydium")
     print(f"  Pool: {pool.address[:16]}...")
@@ -105,7 +105,7 @@ def test_open_position_one_tick_raydium(client):
     print(f"  SOL balance: {sol_balance}")
     print(f"  USDC balance: {usdc_balance}")
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = client.market.pool(RAYDIUM_SOL_USDC_POOL, dex="raydium")
 
@@ -281,7 +281,7 @@ def test_full_lifecycle_raydium(client):
     print(f"  SOL balance: {sol_balance}")
     print(f"  USDC balance: {usdc_balance}")
 
-    from dex_adapter.types import PriceRange
+    from dex_adapter_universal.types import PriceRange
 
     pool = client.market.pool(RAYDIUM_SOL_USDC_POOL, dex="raydium")
     print(f"  Pool: {pool.address[:16]}...")
