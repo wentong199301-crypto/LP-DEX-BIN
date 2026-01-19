@@ -252,12 +252,22 @@ ONEINCH_PRIORITY_FEE_GWEI=0.1           # Priority Fee Gwei (默认: 0.1)
 
 ### UI 反馈费用 vs 程序计算费用
 
-| DEX | UI 反馈 | 程序计算 | 差异分析 |
+| DEX | UI 反馈 | 程序实测 | 差异分析 |
 |-----|---------|---------|---------|
 | Raydium (Solana) | ~$0.03 | ~$0.005 | 可能包含账户租金押金 |
-| PancakeSwap (BSC) | ~$0.03 | ~$0.023 | 较接近 |
+| PancakeSwap (BSC) | ~$0.03 | **$0.023** | 实测：开仓$0.017+关仓$0.006 |
 | Uniswap (ETH) | ~$0.8 | ~$0.84 | 非常接近 |
 | Meteora (Solana) | 未测试 | ~$0.003 | - |
+
+#### PancakeSwap 实测详情 (2026-01-19)
+
+| 操作 | 交易哈希 | Gas Used | Fee (BNB) | Fee (USD) |
+|------|----------|----------|-----------|-----------|
+| 开仓 | `57ccfff6...` | 484,042 | 0.0000242 | $0.017 |
+| 关仓 | `51d831cc...` | 165,762 | 0.0000083 | $0.006 |
+| **总计** | - | 649,804 | 0.0000325 | **$0.023** |
+
+*测试池: USD1/WBNB 0.05% (0x4a3218606AF9B4728a9F187E1c1a8c07fBC172a9)*
 
 ### 关键发现
 
@@ -576,6 +586,31 @@ def _add_gas_price(self, tx):
         tx.pop("maxPriorityFeePerGas", None)
         tx["gasPrice"] = self._web3.eth.gas_price
 ```
+
+**2. PancakeSwap Native BNB 处理问题**
+
+原代码尝试在 WBNB 池子中使用 native BNB 作为 value 发送，但 Position Manager 合约不会自动 wrap BNB。
+
+**症状**: 开仓交易 revert，错误 "Price slippage check"
+
+**受影响文件**: `dex_adapter_universal/protocols/pancakeswap/adapter.py`
+
+**解决方案**: 改为直接使用 WBNB 代币，不使用 native value：
+
+```python
+# 修改前：尝试发送 native BNB
+if token1_is_native and raw_amount1 > 0:
+    native_value += raw_amount1
+# 不 approve WBNB
+
+# 修改后：始终使用代币
+native_value = 0  # 不发送 native BNB
+# Approve 所有代币（包括 WBNB）
+if raw_amount1 > 0:
+    approval = self._ensure_approval_for_position_manager(token1_addr, raw_amount1)
+```
+
+**注意**: 用户需要有 WBNB 代币余额，而不是只有 native BNB。
 
 #### 已知问题
 

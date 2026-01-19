@@ -896,24 +896,17 @@ class PancakeSwapAdapter:
             token0_addr = pool.token0.mint
             token1_addr = pool.token1.mint
 
-            # Check if using native token
+            # Always use token transfers (not native BNB)
+            # This avoids complexity with multicall/wrapETH
+            # User should have WBNB balance if interacting with WBNB pools
             native_value = 0
-            wrapped_native = get_wrapped_native_address(self._chain_id)
-            token0_is_native = token0_addr.lower() == wrapped_native.lower()
-            token1_is_native = token1_addr.lower() == wrapped_native.lower()
 
-            # Handle native BNB value (can send BNB for wrapped native tokens)
-            if token0_is_native and raw_amount0 > 0:
-                native_value += raw_amount0
-            if token1_is_native and raw_amount1 > 0:
-                native_value += raw_amount1
-
-            # Approve non-native tokens (must approve even in mixed pairs)
-            if not token0_is_native and raw_amount0 > 0:
+            # Approve both tokens (including WBNB)
+            if raw_amount0 > 0:
                 approval = self._ensure_approval_for_position_manager(token0_addr, raw_amount0)
                 if approval and not approval.is_success:
                     return approval
-            if not token1_is_native and raw_amount1 > 0:
+            if raw_amount1 > 0:
                 approval = self._ensure_approval_for_position_manager(token1_addr, raw_amount1)
                 if approval and not approval.is_success:
                     return approval
