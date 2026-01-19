@@ -240,11 +240,14 @@ class OneInchAdapter:
             if self._chain_id == 1:
                 latest_block = self._web3.eth.get_block("latest")
                 base_fee = latest_block.get("baseFeePerGas", 0)
-                max_priority_fee = self._web3.to_wei(2, "gwei")
+                # Use configurable priority fee (default 0.1 gwei for minimum cost)
+                priority_fee_gwei = global_config.oneinch.priority_fee_gwei
+                max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
                 max_fee = int(base_fee * 2) + max_priority_fee
                 tx_dict["maxFeePerGas"] = max_fee
                 tx_dict["maxPriorityFeePerGas"] = max_priority_fee
             else:
+                # BSC uses legacy gas price (no EIP-1559)
                 tx_dict["gasPrice"] = self._web3.eth.gas_price
 
             # Sign and send
@@ -314,11 +317,14 @@ class OneInchAdapter:
             if self._chain_id == 1:
                 latest_block = self._web3.eth.get_block("latest")
                 base_fee = latest_block.get("baseFeePerGas", 0)
-                max_priority_fee = self._web3.to_wei(2, "gwei")
+                # Use configurable priority fee (default 0.1 gwei for minimum cost)
+                priority_fee_gwei = global_config.oneinch.priority_fee_gwei
+                max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
                 max_fee = int(base_fee * 2) + max_priority_fee
                 tx_dict["maxFeePerGas"] = max_fee
                 tx_dict["maxPriorityFeePerGas"] = max_priority_fee
             else:
+                # BSC uses legacy gas price (no EIP-1559)
                 tx_dict["gasPrice"] = self._web3.eth.gas_price
 
             # Sign and send
@@ -390,11 +396,14 @@ class OneInchAdapter:
             if self._chain_id == 1:
                 latest_block = self._web3.eth.get_block("latest")
                 base_fee = latest_block.get("baseFeePerGas", 0)
-                max_priority_fee = self._web3.to_wei(2, "gwei")
+                # Use configurable priority fee (default 0.1 gwei for minimum cost)
+                priority_fee_gwei = global_config.oneinch.priority_fee_gwei
+                max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
                 max_fee = int(base_fee * 2) + max_priority_fee
                 tx_dict["maxFeePerGas"] = max_fee
                 tx_dict["maxPriorityFeePerGas"] = max_priority_fee
             else:
+                # BSC uses legacy gas price (no EIP-1559)
                 tx_dict["gasPrice"] = self._web3.eth.gas_price
 
             result = self._signer.sign_and_send(

@@ -100,11 +100,13 @@ class SignerConfig:
 class TxConfig:
     """Transaction configuration"""
     compute_units: int = field(default_factory=lambda: _get_env_int("TX_COMPUTE_UNITS", 200_000))
-    compute_unit_price: int = field(default_factory=lambda: _get_env_int("TX_COMPUTE_UNIT_PRICE", 10_000))
+    # Minimum viable priority fee for swap operations (1000 microlamports/CU)
+    compute_unit_price: int = field(default_factory=lambda: _get_env_int("TX_COMPUTE_UNIT_PRICE", 1_000))
     # LP operations need higher compute budget (Meteora needs 500K+ CUs for wide ranges)
     lp_compute_units: int = field(default_factory=lambda: _get_env_int("TX_LP_COMPUTE_UNITS", 600_000))
-    # LP operations use higher priority fee for faster confirmation during congestion
-    lp_compute_unit_price: int = field(default_factory=lambda: _get_env_int("TX_LP_COMPUTE_UNIT_PRICE", 500_000))
+    # Minimum viable priority fee for LP operations (1000 microlamports/CU)
+    # Note: May need to increase during high network congestion
+    lp_compute_unit_price: int = field(default_factory=lambda: _get_env_int("TX_LP_COMPUTE_UNIT_PRICE", 1_000))
     # Increase default timeout to 90s for better handling of network congestion
     confirmation_timeout: float = field(default_factory=lambda: _get_env_float("TX_CONFIRMATION_TIMEOUT", 90.0))
     max_retries: int = field(default_factory=lambda: _get_env_int("TX_MAX_RETRIES", 3))
@@ -145,6 +147,8 @@ class OneInchConfig:
     # Gas settings
     # Multiplier for gas limit estimates (not gas price) to provide buffer
     gas_limit_multiplier: float = field(default_factory=lambda: _get_env_float("ONEINCH_GAS_LIMIT_MULTIPLIER", 1.1))
+    # Priority fee (tip) in gwei for ETH - minimum viable value (BSC uses chain gas price)
+    priority_fee_gwei: float = field(default_factory=lambda: _get_env_float("ONEINCH_PRIORITY_FEE_GWEI", 0.1))
 
 
 @dataclass
@@ -163,6 +167,8 @@ class PancakeSwapConfig:
 
     # Gas settings
     gas_limit_multiplier: float = field(default_factory=lambda: _get_env_float("PANCAKESWAP_GAS_LIMIT_MULTIPLIER", 1.2))
+    # Priority fee (tip) in gwei for ETH - minimum viable value (BSC uses chain gas price)
+    priority_fee_gwei: float = field(default_factory=lambda: _get_env_float("PANCAKESWAP_PRIORITY_FEE_GWEI", 0.1))
 
 
 @dataclass
@@ -180,6 +186,8 @@ class UniswapConfig:
 
     # Gas settings
     gas_limit_multiplier: float = field(default_factory=lambda: _get_env_float("UNISWAP_GAS_LIMIT_MULTIPLIER", 1.2))
+    # Priority fee (tip) in gwei - minimum viable value
+    priority_fee_gwei: float = field(default_factory=lambda: _get_env_float("UNISWAP_PRIORITY_FEE_GWEI", 0.1))
 
 
 @dataclass
