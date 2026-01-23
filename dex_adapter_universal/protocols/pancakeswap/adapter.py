@@ -896,24 +896,17 @@ class PancakeSwapAdapter:
             token0_addr = pool.token0.mint
             token1_addr = pool.token1.mint
 
-            # Check if using native token
+            # Always use token transfers (not native BNB)
+            # This avoids complexity with multicall/wrapETH
+            # User should have WBNB balance if interacting with WBNB pools
             native_value = 0
-            wrapped_native = get_wrapped_native_address(self._chain_id)
-            token0_is_native = token0_addr.lower() == wrapped_native.lower()
-            token1_is_native = token1_addr.lower() == wrapped_native.lower()
 
-            # Handle native BNB value (can send BNB for wrapped native tokens)
-            if token0_is_native and raw_amount0 > 0:
-                native_value += raw_amount0
-            if token1_is_native and raw_amount1 > 0:
-                native_value += raw_amount1
-
-            # Approve non-native tokens (must approve even in mixed pairs)
-            if not token0_is_native and raw_amount0 > 0:
+            # Approve both tokens (including WBNB)
+            if raw_amount0 > 0:
                 approval = self._ensure_approval_for_position_manager(token0_addr, raw_amount0)
                 if approval and not approval.is_success:
                     return approval
-            if not token1_is_native and raw_amount1 > 0:
+            if raw_amount1 > 0:
                 approval = self._ensure_approval_for_position_manager(token1_addr, raw_amount1)
                 if approval and not approval.is_success:
                     return approval
@@ -1339,15 +1332,27 @@ class PancakeSwapAdapter:
             return TxResult.failed(f"Approval error: {e}")
 
     def _add_gas_price(self, tx: Dict[str, Any]):
-        """Add gas price to transaction"""
+        """Add gas price to transaction with minimum priority fee from config
+        
+        Note: web3 v7's build_transaction may auto-add EIP-1559 params.
+        For BSC (legacy gas), we must remove them before adding gasPrice.
+        """
         if self._chain_id == 1:
             latest_block = self._web3.eth.get_block("latest")
             base_fee = latest_block.get("baseFeePerGas", 0)
-            max_priority_fee = self._web3.to_wei(2, "gwei")
+            # Use configurable priority fee (default 0.1 gwei for minimum cost)
+            priority_fee_gwei = global_config.pancakeswap.priority_fee_gwei
+            max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
             max_fee = int(base_fee * 2) + max_priority_fee
             tx["maxFeePerGas"] = max_fee
             tx["maxPriorityFeePerGas"] = max_priority_fee
+            # Remove legacy gasPrice if present
+            tx.pop("gasPrice", None)
         else:
+            # BSC uses legacy gas price (no EIP-1559)
+            # Remove EIP-1559 params that web3 v7 may have auto-added
+            tx.pop("maxFeePerGas", None)
+            tx.pop("maxPriorityFeePerGas", None)
             tx["gasPrice"] = self._web3.eth.gas_price
 
     def close(self):

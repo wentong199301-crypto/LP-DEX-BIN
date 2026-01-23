@@ -2140,13 +2140,21 @@ class UniswapAdapter:
             return TxResult.failed(f"Approval error: {e}")
 
     def _add_gas_price(self, tx: Dict[str, Any]):
-        """Add EIP-1559 gas price"""
+        """Add EIP-1559 gas price with minimum priority fee from config
+        
+        Note: web3 v7's build_transaction may auto-add gas params.
+        We explicitly set EIP-1559 params and remove legacy gasPrice.
+        """
         latest_block = self._web3.eth.get_block("latest")
         base_fee = latest_block.get("baseFeePerGas", 0)
-        max_priority_fee = self._web3.to_wei(2, "gwei")
+        # Use configurable priority fee (default 0.1 gwei for minimum cost)
+        priority_fee_gwei = global_config.uniswap.priority_fee_gwei
+        max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
         max_fee = int(base_fee * 2) + max_priority_fee
         tx["maxFeePerGas"] = max_fee
         tx["maxPriorityFeePerGas"] = max_priority_fee
+        # Remove legacy gasPrice if present (web3 v7 compatibility)
+        tx.pop("gasPrice", None)
 
     def _result_to_tx_result(self, result: Dict[str, Any]) -> TxResult:
         """Convert signer result to TxResult"""
