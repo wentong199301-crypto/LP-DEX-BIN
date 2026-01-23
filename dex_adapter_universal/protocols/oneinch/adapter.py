@@ -181,7 +181,7 @@ class OneInchAdapter:
         wait_confirmation: bool = True,
     ) -> TxResult:
         """
-        Execute swap
+        Execute swap with automatic retry for recoverable errors
 
         Args:
             from_token: Input token (symbol or address)
@@ -193,6 +193,8 @@ class OneInchAdapter:
         Returns:
             TxResult with transaction status
         """
+        import time
+
         if not self._signer:
             raise SignerError.not_configured()
 
@@ -213,55 +215,103 @@ class OneInchAdapter:
         # Convert slippage from bps to decimal (50 bps = 0.5% = 0.005)
         slippage_decimal = slippage_bps / 10000.0
 
-        try:
-            # Get swap transaction data
-            swap_data = self._api.get_swap(
-                src_token=from_address,
-                dst_token=to_address,
-                amount=raw_amount,
-                from_address=self._signer.address,
-                slippage=slippage_decimal,
-            )
+        max_retries = global_config.oneinch.max_retries
+        retry_delay = 2.0  # Base retry delay in seconds
+        last_error = None
 
-            # Build transaction
-            gas_estimate = swap_data["gas"]
-            gas_with_buffer = int(gas_estimate * global_config.oneinch.gas_limit_multiplier)
+        for attempt in range(max_retries):
+            try:
+                # Get swap transaction data (refresh on retry to get updated price)
+                swap_data = self._api.get_swap(
+                    src_token=from_address,
+                    dst_token=to_address,
+                    amount=raw_amount,
+                    from_address=self._signer.address,
+                    slippage=slippage_decimal,
+                )
 
-            tx_dict = {
-                "to": Web3.to_checksum_address(swap_data["to"]),
-                "data": swap_data["data"],
-                "value": swap_data["value"],
-                "gas": gas_with_buffer,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            }
+                # Build transaction
+                gas_estimate = swap_data["gas"]
+                gas_with_buffer = int(gas_estimate * global_config.oneinch.gas_limit_multiplier)
 
-            # Use EIP-1559 for Ethereum, legacy for BSC
-            if self._chain_id == 1:
-                latest_block = self._web3.eth.get_block("latest")
-                base_fee = latest_block.get("baseFeePerGas", 0)
-                # Use configurable priority fee (default 0.1 gwei for minimum cost)
-                priority_fee_gwei = global_config.oneinch.priority_fee_gwei
-                max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
-                max_fee = int(base_fee * 2) + max_priority_fee
-                tx_dict["maxFeePerGas"] = max_fee
-                tx_dict["maxPriorityFeePerGas"] = max_priority_fee
-            else:
-                # BSC uses legacy gas price (no EIP-1559)
-                tx_dict["gasPrice"] = self._web3.eth.gas_price
+                tx_dict = {
+                    "to": Web3.to_checksum_address(swap_data["to"]),
+                    "data": swap_data["data"],
+                    "value": swap_data["value"],
+                    "gas": gas_with_buffer,
+                    "nonce": self._web3.eth.get_transaction_count(self._signer.address),
+                    "chainId": self._chain_id,
+                }
 
-            # Sign and send
-            result = self._signer.sign_and_send(
-                self._web3,
-                tx_dict,
-                wait_for_receipt=wait_confirmation,
-            )
+                # Use EIP-1559 for Ethereum, legacy for BSC
+                if self._chain_id == 1:
+                    latest_block = self._web3.eth.get_block("latest")
+                    base_fee = latest_block.get("baseFeePerGas", 0)
+                    priority_fee_gwei = global_config.oneinch.priority_fee_gwei
+                    max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
+                    max_fee = int(base_fee * 2) + max_priority_fee
+                    tx_dict["maxFeePerGas"] = max_fee
+                    tx_dict["maxPriorityFeePerGas"] = max_priority_fee
+                else:
+                    # BSC uses legacy gas price (no EIP-1559)
+                    tx_dict["gasPrice"] = self._web3.eth.gas_price
 
-            return self._result_to_tx_result(result)
+                # Sign and send
+                result = self._signer.sign_and_send(
+                    self._web3,
+                    tx_dict,
+                    wait_for_receipt=wait_confirmation,
+                )
 
-        except Exception as e:
-            logger.error(f"Swap failed: {e}")
-            return TxResult.failed(str(e))
+                tx_result = self._result_to_tx_result(result)
+                if tx_result.is_success:
+                    logger.info(f"Swap successful: {tx_result.signature}")
+                return tx_result
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                # Identify recoverable errors
+                is_recoverable = any(keyword in error_str for keyword in [
+                    "timeout", "connection", "network", "rate limit",
+                    "nonce", "too many requests", "503", "502", "504",
+                    "insufficient funds for gas", "replacement transaction"
+                ])
+
+                # Identify slippage errors
+                is_slippage = any(keyword in error_str for keyword in [
+                    "slippage", "price moved", "insufficient output",
+                    "return amount is not enough", "minreturn"
+                ])
+
+                if is_slippage:
+                    logger.warning(f"Slippage error on {self.chain_name} (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    return TxResult.failed(
+                        f"Slippage exceeded: {e}",
+                        recoverable=True,
+                        error_code="3001",
+                    )
+
+                if is_recoverable and attempt < max_retries - 1:
+                    logger.warning(f"Recoverable error on {self.chain_name} (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+
+                logger.error(f"Swap failed on {self.chain_name}: {e}")
+                return TxResult.failed(
+                    str(e),
+                    recoverable=is_recoverable,
+                )
+
+        # Should not reach here, but just in case
+        return TxResult.failed(
+            f"Max retries ({max_retries}) exceeded. Last error: {last_error}",
+            recoverable=True,
+        )
 
     def execute_quote(
         self,

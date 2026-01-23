@@ -26,6 +26,8 @@ class TxResult:
         status: Transaction status
         signature: Transaction signature (base58)
         error: Error message if failed
+        recoverable: Whether the error is recoverable (can retry)
+        error_code: Error code for programmatic handling
         fee_lamports: Transaction fee in lamports
         slot: Slot number when confirmed
         block_time: Block timestamp
@@ -34,6 +36,8 @@ class TxResult:
     status: TxStatus
     signature: Optional[str] = None
     error: Optional[str] = None
+    recoverable: bool = False
+    error_code: Optional[str] = None
     fee_lamports: Optional[int] = None
     slot: Optional[int] = None
     block_time: Optional[int] = None
@@ -84,11 +88,13 @@ class TxResult:
 
     @classmethod
     def timeout(cls, signature: str = None, **kwargs) -> "TxResult":
-        """Create timeout result"""
+        """Create timeout result (recoverable - can check on-chain status)"""
         return cls(
             status=TxStatus.TIMEOUT,
             signature=signature,
             error="Transaction confirmation timeout",
+            recoverable=True,
+            error_code="2003",
             **kwargs
         )
 

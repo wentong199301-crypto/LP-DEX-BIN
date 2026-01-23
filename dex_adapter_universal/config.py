@@ -83,7 +83,7 @@ def _get_env_bool(key: str, default: bool) -> bool:
 @dataclass
 class RpcConfig:
     """RPC client configuration"""
-    url: str = field(default_factory=lambda: _get_env("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"))
+    url: str = field(default_factory=lambda: _get_env("SOLANA_RPC_URL", ""))
     timeout_seconds: float = field(default_factory=lambda: _get_env_float("RPC_TIMEOUT_SECONDS", 30.0))
     max_retries: int = field(default_factory=lambda: _get_env_int("RPC_MAX_RETRIES", 3))
     retry_delay_seconds: float = field(default_factory=lambda: _get_env_float("RPC_RETRY_DELAY_SECONDS", 1.0))
@@ -107,9 +107,8 @@ class TxConfig:
     # Minimum viable priority fee for LP operations (1000 microlamports/CU)
     # Note: May need to increase during high network congestion
     lp_compute_unit_price: int = field(default_factory=lambda: _get_env_int("TX_LP_COMPUTE_UNIT_PRICE", 1_000))
-    # Increase default timeout to 90s for better handling of network congestion
-    confirmation_timeout: float = field(default_factory=lambda: _get_env_float("TX_CONFIRMATION_TIMEOUT", 90.0))
-    max_retries: int = field(default_factory=lambda: _get_env_int("TX_MAX_RETRIES", 3))
+    confirmation_timeout: float = field(default_factory=lambda: _get_env_float("TX_CONFIRMATION_TIMEOUT", 30.0))
+    max_retries: int = field(default_factory=lambda: _get_env_int("TX_MAX_RETRIES", 5))
     retry_delay: float = field(default_factory=lambda: _get_env_float("TX_RETRY_DELAY", 2.0))
     skip_preflight: bool = field(default_factory=lambda: _get_env_bool("TX_SKIP_PREFLIGHT", False))
     preflight_commitment: str = field(default_factory=lambda: _get_env("TX_PREFLIGHT_COMMITMENT", "confirmed"))
@@ -117,28 +116,26 @@ class TxConfig:
 
 @dataclass
 class JupiterConfig:
-    """Jupiter API configuration"""
-    # Using public.jupiterapi.com as fallback since quote-api.jup.ag may have DNS issues
-    # Note: public.jupiterapi.com has a 0.2% platform fee
-    quote_url: str = field(default_factory=lambda: _get_env("JUPITER_QUOTE_URL", "https://public.jupiterapi.com/quote"))
-    swap_url: str = field(default_factory=lambda: _get_env("JUPITER_SWAP_URL", "https://public.jupiterapi.com/swap"))
-    token_list_url: str = field(default_factory=lambda: _get_env("JUPITER_TOKEN_LIST_URL", "https://tokens.jup.ag/tokens?tags=verified"))
+    """Jupiter API configuration (URLs must be configured in .env)"""
+    quote_url: str = field(default_factory=lambda: _get_env("JUPITER_QUOTE_URL", ""))
+    swap_url: str = field(default_factory=lambda: _get_env("JUPITER_SWAP_URL", ""))
+    token_list_url: str = field(default_factory=lambda: _get_env("JUPITER_TOKEN_LIST_URL", ""))
     timeout: float = field(default_factory=lambda: _get_env_float("JUPITER_TIMEOUT", 30.0))
-    max_retries: int = field(default_factory=lambda: _get_env_int("JUPITER_MAX_RETRIES", 3))
+    max_retries: int = field(default_factory=lambda: _get_env_int("JUPITER_MAX_RETRIES", 5))
 
 
 @dataclass
 class OneInchConfig:
-    """1inch API configuration for EVM chains (ETH/BSC)"""
+    """1inch API configuration for EVM chains (ETH/BSC) - URLs must be configured in .env"""
     # API settings
-    base_url: str = field(default_factory=lambda: _get_env("ONEINCH_BASE_URL", "https://api.1inch.dev/swap/v6.0"))
+    base_url: str = field(default_factory=lambda: _get_env("ONEINCH_BASE_URL", ""))
     api_key: Optional[str] = field(default_factory=lambda: _get_env("ONEINCH_API_KEY", None))
     timeout: float = field(default_factory=lambda: _get_env_float("ONEINCH_TIMEOUT", 30.0))
     max_retries: int = field(default_factory=lambda: _get_env_int("ONEINCH_MAX_RETRIES", 3))
 
-    # Chain-specific RPC URLs
-    eth_rpc_url: str = field(default_factory=lambda: _get_env("ETH_RPC_URL", "https://eth.llamarpc.com"))
-    bsc_rpc_url: str = field(default_factory=lambda: _get_env("BSC_RPC_URL", "https://bsc-dataseed.binance.org"))
+    # Chain-specific RPC URLs (must be configured in .env)
+    eth_rpc_url: str = field(default_factory=lambda: _get_env("ETH_RPC_URL", ""))
+    bsc_rpc_url: str = field(default_factory=lambda: _get_env("BSC_RPC_URL", ""))
 
     # Chain IDs (constants)
     eth_chain_id: int = 1
@@ -153,14 +150,14 @@ class OneInchConfig:
 
 @dataclass
 class PancakeSwapConfig:
-    """PancakeSwap API configuration for BSC only"""
-    # API settings - PancakeSwap has public APIs
-    base_url: str = field(default_factory=lambda: _get_env("PANCAKESWAP_BASE_URL", "https://pancakeswap.finance/api/v0"))
+    """PancakeSwap API configuration for BSC only - URLs must be configured in .env"""
+    # API settings
+    base_url: str = field(default_factory=lambda: _get_env("PANCAKESWAP_BASE_URL", ""))
     timeout: float = field(default_factory=lambda: _get_env_float("PANCAKESWAP_TIMEOUT", 30.0))
     max_retries: int = field(default_factory=lambda: _get_env_int("PANCAKESWAP_MAX_RETRIES", 3))
 
-    # BSC RPC URL
-    bsc_rpc_url: str = field(default_factory=lambda: _get_env("BSC_RPC_URL", "https://bsc-dataseed.binance.org"))
+    # BSC RPC URL (must be configured in .env)
+    bsc_rpc_url: str = field(default_factory=lambda: _get_env("BSC_RPC_URL", ""))
 
     # Chain ID (BSC only)
     bsc_chain_id: int = 56
@@ -178,8 +175,8 @@ class UniswapConfig:
     timeout: float = field(default_factory=lambda: _get_env_float("UNISWAP_TIMEOUT", 30.0))
     max_retries: int = field(default_factory=lambda: _get_env_int("UNISWAP_MAX_RETRIES", 3))
 
-    # Ethereum RPC URL
-    eth_rpc_url: str = field(default_factory=lambda: _get_env("ETH_RPC_URL", "https://eth.llamarpc.com"))
+    # Ethereum RPC URL (must be configured in .env)
+    eth_rpc_url: str = field(default_factory=lambda: _get_env("ETH_RPC_URL", ""))
 
     # Chain ID (Ethereum only)
     eth_chain_id: int = 1
@@ -193,7 +190,7 @@ class UniswapConfig:
 @dataclass
 class TradingConfig:
     """Default trading parameters"""
-    default_slippage_bps: int = field(default_factory=lambda: _get_env_int("DEFAULT_SLIPPAGE_BPS", 50))
+    default_slippage_bps: int = field(default_factory=lambda: _get_env_int("DEFAULT_SLIPPAGE_BPS", 30))
 
 
 @dataclass

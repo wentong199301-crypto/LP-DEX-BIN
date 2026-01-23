@@ -21,6 +21,7 @@ from ..protocols.jupiter import JupiterAdapter
 from ..protocols.oneinch import OneInchAdapter
 from ..infra.evm_signer import EVMSigner, create_web3
 from ..errors import ConfigurationError, OperationNotSupported
+from ..config import config
 
 
 class Chain(Enum):
@@ -163,7 +164,7 @@ class SwapModule:
         from_token: str,
         to_token: str,
         amount: Decimal,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
         chain: Union[str, Chain] = Chain.SOLANA,
     ) -> QuoteResult:
         """
@@ -190,6 +191,7 @@ class SwapModule:
             quote = swap.quote("BNB", "USDT", Decimal("1.0"), chain="bsc")
         """
         resolved_chain = self._resolve_chain(chain)
+        actual_slippage = slippage_bps if slippage_bps is not None else config.trading.default_slippage_bps
 
         if resolved_chain == Chain.SOLANA:
             adapter = self._get_jupiter_adapter()
@@ -200,7 +202,7 @@ class SwapModule:
             from_token=from_token,
             to_token=to_token,
             amount=amount,
-            slippage_bps=slippage_bps,
+            slippage_bps=actual_slippage,
         )
 
     def execute(
@@ -237,7 +239,7 @@ class SwapModule:
         from_token: str,
         to_token: str,
         amount: Decimal,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
         wait_confirmation: bool = True,
         chain: Union[str, Chain] = Chain.SOLANA,
     ) -> TxResult:
@@ -266,6 +268,7 @@ class SwapModule:
             result = swap.swap("BNB", "USDT", Decimal("1.0"), chain="bsc")
         """
         resolved_chain = self._resolve_chain(chain)
+        actual_slippage = slippage_bps if slippage_bps is not None else config.trading.default_slippage_bps
 
         if resolved_chain == Chain.SOLANA:
             adapter = self._get_jupiter_adapter()
@@ -276,7 +279,7 @@ class SwapModule:
             from_token=from_token,
             to_token=to_token,
             amount=amount,
-            slippage_bps=slippage_bps,
+            slippage_bps=actual_slippage,
             wait_confirmation=wait_confirmation,
         )
 

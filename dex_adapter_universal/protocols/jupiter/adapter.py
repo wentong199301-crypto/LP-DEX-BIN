@@ -10,12 +10,18 @@ from typing import List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from solders.instruction import Instruction
 
+import logging
+import time
+
 from ...types import Pool, Position, PriceRange, TxResult, TxStatus, QuoteResult
 from ...types.solana_tokens import KNOWN_TOKEN_MINTS, KNOWN_TOKEN_DECIMALS, resolve_token_mint
 from ...infra import RpcClient, TxBuilder, Signer
-from ...errors import SignerError, ConfigurationError
+from ...errors import SignerError, ConfigurationError, RpcError, TransactionError, SlippageExceeded
+from ...config import config as global_config
 
 from .api import JupiterAPI
+
+logger = logging.getLogger(__name__)
 
 
 class JupiterAdapter:
@@ -110,7 +116,7 @@ class JupiterAdapter:
         wait_confirmation: bool = True,
     ) -> TxResult:
         """
-        Execute swap
+        Execute swap with automatic retry for recoverable errors
 
         Args:
             from_token: Input token (symbol or mint)
@@ -125,44 +131,108 @@ class JupiterAdapter:
         if not self._signer:
             raise SignerError.not_configured()
 
-        # Get quote
-        quote = self.quote(from_token, to_token, amount, slippage_bps)
+        max_retries = global_config.tx.max_retries
+        retry_delay = global_config.tx.retry_delay
+        last_error = None
 
-        # Get swap transaction with priority fee from config
-        from ...config import config as global_config
-        tx_bytes = self._api.get_swap_transaction(
-            quote=quote,
-            user_pubkey=self.pubkey,
-            compute_unit_price_micro_lamports=global_config.tx.compute_unit_price,
-        )
+        for attempt in range(max_retries):
+            try:
+                # Get quote (refresh on retry to get updated price)
+                quote = self.quote(from_token, to_token, amount, slippage_bps)
 
-        # Sign and send
-        signed_tx, signature = self._signer.sign_transaction(tx_bytes)
-
-        # Send via RPC with retries (like TypeScript reference)
-        try:
-            sig = self._rpc.send_transaction(
-                signed_tx,
-                skip_preflight=False,
-                max_retries=3,
-            )
-
-            if wait_confirmation:
-                confirmed = self._rpc.confirm_transaction(sig)
-                if confirmed is True:
-                    return TxResult.success(sig)
-                elif confirmed is False:
-                    return TxResult.failed("Transaction failed on-chain", sig)
-                else:  # None = timeout
-                    return TxResult.timeout(sig)
-            else:
-                return TxResult(
-                    status=TxStatus.PENDING,
-                    signature=sig,
+                # Get swap transaction with priority fee from config
+                tx_bytes = self._api.get_swap_transaction(
+                    quote=quote,
+                    user_pubkey=self.pubkey,
+                    compute_unit_price_micro_lamports=global_config.tx.compute_unit_price,
                 )
 
-        except Exception as e:
-            return TxResult.failed(str(e))
+                # Sign and send
+                signed_tx, signature = self._signer.sign_transaction(tx_bytes)
+
+                sig = self._rpc.send_transaction(
+                    signed_tx,
+                    skip_preflight=global_config.tx.skip_preflight,
+                    max_retries=1,  # RPC level retry, we handle retries here
+                )
+
+                if wait_confirmation:
+                    confirmed = self._rpc.confirm_transaction(
+                        sig,
+                        timeout_seconds=global_config.tx.confirmation_timeout,
+                    )
+                    if confirmed is True:
+                        logger.info(f"Swap successful: {sig}")
+                        return TxResult.success(sig)
+                    elif confirmed is False:
+                        # On-chain failure - check if it's slippage related
+                        error_msg = "Transaction failed on-chain"
+                        logger.warning(f"Swap failed on-chain: {sig}")
+                        return TxResult.failed(error_msg, sig, recoverable=False)
+                    else:  # None = timeout
+                        logger.warning(f"Swap confirmation timeout: {sig} (attempt {attempt + 1}/{max_retries})")
+                        last_error = TransactionError.confirmation_failed(sig, "Confirmation timeout")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        return TxResult.timeout(sig)
+                else:
+                    return TxResult(status=TxStatus.PENDING, signature=sig)
+
+            except RpcError as e:
+                last_error = e
+                logger.warning(f"RPC error (attempt {attempt + 1}/{max_retries}): {e}")
+                if e.recoverable and attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+                return TxResult.failed(
+                    f"RPC error: {e.message}",
+                    recoverable=e.recoverable,
+                    error_code=e.code.value,
+                )
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                # Identify recoverable errors
+                is_recoverable = any(keyword in error_str for keyword in [
+                    "timeout", "connection", "network", "rate limit",
+                    "blockhash", "too many requests", "503", "502", "504"
+                ])
+
+                # Identify slippage errors
+                is_slippage = any(keyword in error_str for keyword in [
+                    "slippage", "price moved", "insufficient output"
+                ])
+
+                if is_slippage:
+                    logger.warning(f"Slippage error (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    return TxResult.failed(
+                        f"Slippage exceeded: {e}",
+                        recoverable=True,
+                        error_code="3001",
+                    )
+
+                if is_recoverable and attempt < max_retries - 1:
+                    logger.warning(f"Recoverable error (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+
+                logger.error(f"Swap failed: {e}")
+                return TxResult.failed(
+                    str(e),
+                    recoverable=is_recoverable,
+                )
+
+        # Should not reach here, but just in case
+        return TxResult.failed(
+            f"Max retries ({max_retries}) exceeded. Last error: {last_error}",
+            recoverable=True,
+        )
 
     def execute_quote(
         self,
@@ -170,7 +240,7 @@ class JupiterAdapter:
         wait_confirmation: bool = True,
     ) -> TxResult:
         """
-        Execute a previously obtained quote
+        Execute a previously obtained quote with automatic retry
 
         Args:
             quote: Quote from quote() method
@@ -182,31 +252,78 @@ class JupiterAdapter:
         if not self._signer:
             raise SignerError.not_configured()
 
-        from ...config import config as global_config
-        tx_bytes = self._api.get_swap_transaction(
-            quote=quote,
-            user_pubkey=self.pubkey,
-            compute_unit_price_micro_lamports=global_config.tx.compute_unit_price,
+        max_retries = global_config.tx.max_retries
+        retry_delay = global_config.tx.retry_delay
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                tx_bytes = self._api.get_swap_transaction(
+                    quote=quote,
+                    user_pubkey=self.pubkey,
+                    compute_unit_price_micro_lamports=global_config.tx.compute_unit_price,
+                )
+
+                signed_tx, signature = self._signer.sign_transaction(tx_bytes)
+
+                sig = self._rpc.send_transaction(
+                    signed_tx,
+                    skip_preflight=global_config.tx.skip_preflight,
+                    max_retries=1,
+                )
+
+                if wait_confirmation:
+                    confirmed = self._rpc.confirm_transaction(
+                        sig,
+                        timeout_seconds=global_config.tx.confirmation_timeout,
+                    )
+                    if confirmed is True:
+                        logger.info(f"Execute quote successful: {sig}")
+                        return TxResult.success(sig)
+                    elif confirmed is False:
+                        return TxResult.failed("Transaction failed on-chain", sig, recoverable=False)
+                    else:  # None = timeout
+                        logger.warning(f"Confirmation timeout: {sig} (attempt {attempt + 1}/{max_retries})")
+                        last_error = "Confirmation timeout"
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        return TxResult.timeout(sig)
+                else:
+                    return TxResult(status=TxStatus.PENDING, signature=sig)
+
+            except RpcError as e:
+                last_error = e
+                logger.warning(f"RPC error (attempt {attempt + 1}/{max_retries}): {e}")
+                if e.recoverable and attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                return TxResult.failed(
+                    f"RPC error: {e.message}",
+                    recoverable=e.recoverable,
+                    error_code=e.code.value,
+                )
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                is_recoverable = any(keyword in error_str for keyword in [
+                    "timeout", "connection", "network", "rate limit",
+                    "blockhash", "too many requests", "503", "502", "504"
+                ])
+
+                if is_recoverable and attempt < max_retries - 1:
+                    logger.warning(f"Recoverable error (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+
+                logger.error(f"Execute quote failed: {e}")
+                return TxResult.failed(str(e), recoverable=is_recoverable)
+
+        return TxResult.failed(
+            f"Max retries ({max_retries}) exceeded. Last error: {last_error}",
+            recoverable=True,
         )
-
-        signed_tx, signature = self._signer.sign_transaction(tx_bytes)
-
-        try:
-            sig = self._rpc.send_transaction(signed_tx, skip_preflight=False, max_retries=3)
-
-            if wait_confirmation:
-                confirmed = self._rpc.confirm_transaction(sig)
-                if confirmed is True:
-                    return TxResult.success(sig)
-                elif confirmed is False:
-                    return TxResult.failed("Transaction failed on-chain", sig)
-                else:  # None = timeout
-                    return TxResult.timeout(sig)
-            else:
-                return TxResult(status=TxStatus.PENDING, signature=sig)
-
-        except Exception as e:
-            return TxResult.failed(str(e))
 
     def _resolve_mint(self, token: str) -> str:
         """Resolve token symbol or mint to mint address"""

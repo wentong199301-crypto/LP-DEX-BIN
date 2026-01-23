@@ -160,17 +160,40 @@ client.swap.swap("BNB", "USDT", Decimal("1"), chain="bsc")     # 1inch
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure:
+Copy `.env.example` to `.env` and configure all required values.
+
+**IMPORTANT**: All URLs, API keys, and private keys must be configured in `.env`. There are no default values for these.
+
+### Required Configuration
 
 ```bash
-# Solana
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+# Solana (REQUIRED)
+SOLANA_RPC_URL=https://your-solana-rpc.com
 SOLANA_KEYPAIR_PATH=/path/to/keypair.json
+# or SOLANA_PRIVATE_KEY=your_base58_private_key
 
-# EVM (ETH/BSC)
-ONEINCH_API_KEY=your_1inch_api_key
+# EVM RPC (REQUIRED for ETH/BSC)
+ETH_RPC_URL=https://your-ethereum-rpc.com
+BSC_RPC_URL=https://your-bsc-rpc.com
 EVM_PRIVATE_KEY=your_evm_private_key
+
+# API URLs (REQUIRED)
+ONEINCH_API_KEY=your_1inch_api_key
+ONEINCH_BASE_URL=https://api.1inch.dev/swap/v6.0
+JUPITER_QUOTE_URL=https://public.jupiterapi.com/quote
+JUPITER_SWAP_URL=https://public.jupiterapi.com/swap
+JUPITER_TOKEN_LIST_URL=https://tokens.jup.ag/tokens?tags=verified
+PANCAKESWAP_BASE_URL=https://pancakeswap.finance/api/v0
 ```
+
+### Default Values (in config.py)
+
+| Config | Default | Description |
+|--------|---------|-------------|
+| `default_slippage_bps` | 30 | Default slippage 0.3% |
+| `max_retries` | 5 | Max retry attempts for recoverable errors |
+| `retry_delay` | 2.0s | Delay between retries |
+| `confirmation_timeout` | 30.0s | Transaction confirmation timeout |
 
 ## DexClient Modules
 

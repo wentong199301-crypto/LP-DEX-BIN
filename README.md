@@ -181,59 +181,40 @@ dex_adapter_universal/
 
 ## 配置参考
 
-### 基础配置
+复制 `.env.example` 到 `.env` 并配置所有必需值。
 
-复制 `.env.example` 到 `.env` 并配置：
+**重要**：所有 URL、API 密钥和私钥必须在 `.env` 中配置。config.py 中没有这些的默认值。
+
+### 必需配置
 
 ```bash
-# Solana RPC
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+# Solana（必需）
+SOLANA_RPC_URL=https://your-solana-rpc.com
 SOLANA_KEYPAIR_PATH=/path/to/keypair.json
-# 或使用私钥
-# SOLANA_PRIVATE_KEY=your_base58_private_key
+# 或 SOLANA_PRIVATE_KEY=your_base58_private_key
 
-# EVM（ETH/BSC）
-ETH_RPC_URL=https://eth.llamarpc.com
-BSC_RPC_URL=https://bsc-dataseed.binance.org
+# EVM RPC（ETH/BSC 必需）
+ETH_RPC_URL=https://your-ethereum-rpc.com
+BSC_RPC_URL=https://your-bsc-rpc.com
 EVM_PRIVATE_KEY=your_evm_private_key
 
-# API Keys
+# API URL（必需）
 ONEINCH_API_KEY=your_1inch_api_key
+ONEINCH_BASE_URL=https://api.1inch.dev/swap/v6.0
+JUPITER_QUOTE_URL=https://public.jupiterapi.com/quote
+JUPITER_SWAP_URL=https://public.jupiterapi.com/swap
+JUPITER_TOKEN_LIST_URL=https://tokens.jup.ag/tokens?tags=verified
+PANCAKESWAP_BASE_URL=https://pancakeswap.finance/api/v0
 ```
 
-### Solana 交易配置
+### 默认值（在 config.py 中）
 
-```bash
-# Swap 操作 Compute Budget
-TX_COMPUTE_UNITS=200000           # Compute Unit 限制 (默认: 200,000)
-TX_COMPUTE_UNIT_PRICE=1000        # Priority Fee (microlamports/CU, 默认: 1,000)
-
-# LP 操作 Compute Budget (需要更高)
-TX_LP_COMPUTE_UNITS=600000        # LP Compute Unit 限制 (默认: 600,000)
-TX_LP_COMPUTE_UNIT_PRICE=1000     # LP Priority Fee (默认: 1,000)
-
-# 交易确认
-TX_CONFIRMATION_TIMEOUT=90.0      # 确认超时秒数 (默认: 90)
-TX_MAX_RETRIES=3                  # 最大重试次数 (默认: 3)
-TX_RETRY_DELAY=2.0                # 重试间隔秒数 (默认: 2)
-TX_SKIP_PREFLIGHT=false           # 跳过预检 (默认: false)
-```
-
-### EVM Gas 配置
-
-```bash
-# PancakeSwap (BSC)
-PANCAKESWAP_GAS_LIMIT_MULTIPLIER=1.2    # Gas 估算缓冲 (默认: 1.2)
-PANCAKESWAP_PRIORITY_FEE_GWEI=0.1       # Priority Fee Gwei (默认: 0.1)
-
-# Uniswap (Ethereum)
-UNISWAP_GAS_LIMIT_MULTIPLIER=1.2        # Gas 估算缓冲 (默认: 1.2)
-UNISWAP_PRIORITY_FEE_GWEI=0.1           # Priority Fee Gwei (默认: 0.1)
-
-# 1inch
-ONEINCH_GAS_LIMIT_MULTIPLIER=1.1        # Gas 估算缓冲 (默认: 1.1)
-ONEINCH_PRIORITY_FEE_GWEI=0.1           # Priority Fee Gwei (默认: 0.1)
-```
+| 配置 | 默认值 | 说明 |
+|------|--------|------|
+| `default_slippage_bps` | 30 | 默认滑点 0.3% |
+| `max_retries` | 5 | 可恢复错误的最大重试次数 |
+| `retry_delay` | 2.0s | 重试间隔 |
+| `confirmation_timeout` | 30.0s | 交易确认超时 |
 
 ---
 
@@ -491,6 +472,8 @@ from dex_adapter_universal import Token, Pool, Position, TxResult, QuoteResult
 result.status       # TxStatus.SUCCESS, FAILED, PENDING, TIMEOUT
 result.signature    # 交易签名/哈希
 result.is_success   # 布尔快捷方式
+result.recoverable  # 是否可以重试
+result.error_code   # 错误代码（用于分类）
 
 # QuoteResult
 quote.from_amount   # 输入金额（原始值）
@@ -501,6 +484,26 @@ quote.price_impact_percent
 ---
 
 ## 错误处理
+
+### 自动重试机制
+
+Swap 操作内置自动重试，用于处理可恢复错误：
+- 超时和网络问题自动重试
+- 滑点错误会刷新报价后重试
+- 不可恢复错误（余额不足等）立即失败
+
+```python
+# 检查结果的 recoverable 字段
+result = client.swap.swap("SOL", "USDC", amount)
+if not result.is_success:
+    if result.recoverable:
+        print(f"可重试错误: {result.error}")
+    else:
+        print(f"不可恢复错误: {result.error}")
+    print(f"错误代码: {result.error_code}")
+```
+
+### 异常类
 
 ```python
 from dex_adapter_universal.errors import (
@@ -556,6 +559,35 @@ python test/run_all_tests.py --quick
 ---
 
 ## 最近更新
+
+### v1.2.0 - 2026-01-22
+
+#### 新功能
+
+**1. Swap 自动重试机制**
+
+为 Jupiter 和 1inch 适配器添加了自动重试功能：
+- 可恢复错误（超时、网络、限流）自动重试
+- 滑点错误刷新报价后重试
+- 不可恢复错误（余额不足）立即失败
+- 默认最大重试次数: 5
+
+**2. TxResult 增强**
+
+TxResult 新增字段用于错误分类：
+```python
+result.recoverable  # bool: 是否可以重试
+result.error_code   # str: 错误代码
+```
+
+**3. 配置简化**
+
+- 移除 config.py 中所有硬编码 URL
+- 所有 URL、API Key、私钥必须在 .env 中配置
+- 默认滑点改为 30 bps (0.3%)
+- 默认重试次数改为 5 次
+
+---
 
 ### v1.1.0 - 2026-01-19
 
