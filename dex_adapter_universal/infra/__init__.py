@@ -6,6 +6,7 @@ Provides:
 - Signer: Transaction signing abstraction (local keypair)
 - TxBuilder: Transaction assembly and sending
 - EVMSigner: EVM transaction signing using web3.py
+- Retry utilities: execute_with_retry, classify_error
 """
 
 from .rpc import RpcClient, RpcClientConfig
@@ -19,10 +20,23 @@ from .tx_builder import TxBuilder, TxBuilderConfig
 # EVM infrastructure
 from .evm_signer import (
     EVMSigner,
+    NonceManager,
+    get_nonce_manager,
     create_web3,
     create_evm_signer,
     get_balance as get_evm_balance,
     get_token_info as get_evm_token_info,
+)
+
+# Retry utilities
+from .retry import (
+    execute_with_retry,
+    execute_swap_with_retry,
+    classify_error,
+    CorrelationContext,
+    generate_correlation_id,
+    get_correlation_id,
+    set_correlation_id,
 )
 
 __all__ = [
@@ -36,8 +50,19 @@ __all__ = [
     "TxBuilderConfig",
     # EVM infrastructure
     "EVMSigner",
+    "NonceManager",
+    "get_nonce_manager",
     "create_web3",
     "create_evm_signer",
     "get_evm_balance",
     "get_evm_token_info",
+    # Retry utilities
+    "execute_with_retry",
+    "execute_swap_with_retry",
+    "classify_error",
+    # Correlation ID utilities
+    "CorrelationContext",
+    "generate_correlation_id",
+    "get_correlation_id",
+    "set_correlation_id",
 ]

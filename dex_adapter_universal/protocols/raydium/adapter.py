@@ -5,7 +5,7 @@ Based on raydium_trading reference implementation.
 
 Implements ProtocolAdapter interface for Raydium Concentrated Liquidity with:
 - Token-2022 NFT support (open_position_with_token22_nft)
-- Multi-variant close position strategy
+- Single-transaction close position (remove liquidity + claim fees + close)
 - Auto-detection of token programs
 - Floor-based tick array alignment
 - Proper reward handling with manual overrides
@@ -49,13 +49,10 @@ from .position_parser import (
 from .instructions import (
     build_open_position_instructions,
     build_close_position_instructions,
-    build_close_position_candidates,
     build_increase_liquidity_instructions,
     build_decrease_liquidity_instructions,
     build_wrap_sol_instructions,
     build_unwrap_wsol_instructions,
-    detect_token_program_for_mint,
-    get_associated_token_address,
 )
 
 
@@ -71,7 +68,7 @@ class RaydiumAdapter(ProtocolAdapter):
     Key features (based on raydium_trading reference):
     - Uses open_position_with_token22_nft for new positions
     - Auto-detects token programs for Token-2022 support
-    - Multi-variant close position strategy
+    - Single-TX close (remove liquidity + claim fees + close in one transaction)
     - Floor-based tick array alignment
 
     Usage:
@@ -87,23 +84,17 @@ class RaydiumAdapter(ProtocolAdapter):
 
     def __init__(self, rpc: RpcClient):
         super().__init__(rpc)
-        self._pool_cache: dict[str, dict] = {}  # Cache pool states
 
     # ========== Pool Operations ==========
 
     def get_pool(self, pool_address: str) -> Pool:
         """Get pool information by address"""
         state = self._fetch_pool_state(pool_address)
-        return pool_state_to_pool(pool_address, state)
+        return pool_state_to_pool(pool_address, state, rpc=self._rpc)
 
-    def _fetch_pool_state(self, pool_address: str, refresh: bool = False) -> dict:
-        """Fetch pool state with caching"""
-        if not refresh and pool_address in self._pool_cache:
-            return self._pool_cache[pool_address]
-
-        state = fetch_pool_state(self._rpc, pool_address)
-        self._pool_cache[pool_address] = state
-        return state
+    def _fetch_pool_state(self, pool_address: str) -> dict:
+        """Fetch pool state from RPC"""
+        return fetch_pool_state(self._rpc, pool_address)
 
     # ========== Position Operations ==========
 
@@ -295,7 +286,7 @@ class RaydiumAdapter(ProtocolAdapter):
             List of instructions to execute
         """
         # Fetch fresh states
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
+        pool_state = self._fetch_pool_state(position.pool.address)
         position_state = fetch_position_by_nft(self._rpc, position.nft_mint)
 
         if not position_state:
@@ -303,22 +294,34 @@ class RaydiumAdapter(ProtocolAdapter):
 
         instructions = []
 
-        # First decrease all liquidity AND collect fees/rewards
-        # IMPORTANT: Even if liquidity is 0, we must call decrease_liquidity
-        # with delta=0 to collect any pending fees and rewards.
-        # Raydium's close_position requires all fees/rewards to be claimed first.
+        # First decrease all liquidity
+        # IMPORTANT: Raydium's close_position requires all fees/rewards to be claimed first.
         # Error 101 (ClosePositionErr) occurs if fees/rewards remain uncollected.
         liquidity_delta = position_state["liquidity"]
-        decrease_ixs = build_decrease_liquidity_instructions(
+        if liquidity_delta > 0:
+            decrease_ixs = build_decrease_liquidity_instructions(
+                position_state=position_state,
+                pool_state=pool_state,
+                owner=owner,
+                liquidity_delta=liquidity_delta,
+                amount_0_min=0,
+                amount_1_min=0,
+                rpc=self._rpc,
+            )
+            instructions.extend(decrease_ixs)
+
+        # Second call with delta=0 to claim remaining fees/rewards
+        # This is required before close_position or Error 101 occurs
+        claim_ixs = build_decrease_liquidity_instructions(
             position_state=position_state,
             pool_state=pool_state,
             owner=owner,
-            liquidity_delta=liquidity_delta,  # Can be 0 to just collect fees
+            liquidity_delta=0,  # 0 = just collect fees/rewards
             amount_0_min=0,
             amount_1_min=0,
-            rpc=self._rpc,  # Pass RPC for token program detection
+            rpc=self._rpc,
         )
-        instructions.extend(decrease_ixs)
+        instructions.extend(claim_ixs)
 
         # Then close the position
         close_ixs = build_close_position_instructions(
@@ -335,161 +338,6 @@ class RaydiumAdapter(ProtocolAdapter):
             instructions.extend(unwrap_ixs)
 
         return instructions
-
-    def generate_close_position_steps(
-        self,
-        position: Position,
-        owner: str,
-    ):
-        """
-        Generate multi-step close position instructions.
-
-        Raydium's close_position requires the position to have:
-        - 0 liquidity
-        - 0 unclaimed fees
-        - 0 unclaimed rewards
-
-        This generator yields instruction sets for each step:
-        1. Remove ALL liquidity (if any)
-        2. Claim remaining fees/rewards (decrease_liquidity with delta=0)
-        3. Close position (burn NFT)
-
-        Yields:
-            Tuple of (instructions, step_description, is_final)
-
-        Usage:
-            for instructions, desc, is_final in adapter.generate_close_position_steps(pos, owner):
-                result = tx_builder.build_and_send(instructions, ...)
-                if not result.is_success and is_final:
-                    return result
-        """
-        import logging
-        logger = logging.getLogger(__name__)
-
-        logger.debug(f"Closing Raydium position {position.nft_mint}")
-
-        # Step 1: Remove all liquidity
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
-        position_state = fetch_position_by_nft(self._rpc, position.nft_mint)
-
-        if not position_state:
-            return  # Position already closed
-
-        current_liquidity = position_state.get("liquidity", 0)
-        logger.debug(f"Position liquidity: {current_liquidity}")
-
-        if current_liquidity > 0:
-            remove_instructions = build_decrease_liquidity_instructions(
-                position_state=position_state,
-                pool_state=pool_state,
-                owner=owner,
-                liquidity_delta=current_liquidity,
-                amount_0_min=0,
-                amount_1_min=0,
-                rpc=self._rpc,
-            )
-            if remove_instructions:
-                yield (remove_instructions, "remove_liquidity", False)
-
-        # Step 2: Claim remaining fees/rewards
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
-        position_state = fetch_position_by_nft(self._rpc, position.nft_mint)
-
-        if not position_state:
-            return  # Position closed during liquidity removal
-
-        claim_instructions = build_decrease_liquidity_instructions(
-            position_state=position_state,
-            pool_state=pool_state,
-            owner=owner,
-            liquidity_delta=0,  # 0 = just collect fees/rewards
-            amount_0_min=0,
-            amount_1_min=0,
-            rpc=self._rpc,
-        )
-        if claim_instructions:
-            yield (claim_instructions, "claim_fees", False)
-
-        # Step 3: Close position
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
-        position_state = fetch_position_by_nft(self._rpc, position.nft_mint)
-
-        if not position_state:
-            return  # Position closed during claim
-
-        close_instructions = build_close_position_instructions(
-            position_state=position_state,
-            pool_state=pool_state,
-            owner=owner,
-            rpc=self._rpc,
-        )
-
-        # Add WSOL unwrap if needed
-        if pool_state["mint_a"] == WRAPPED_SOL_MINT or pool_state["mint_b"] == WRAPPED_SOL_MINT:
-            close_instructions.extend(build_unwrap_wsol_instructions(owner, rpc=self._rpc))
-
-        yield (close_instructions, "close_position", True)
-
-    def build_close_position_with_simulation(
-        self,
-        position: Position,
-        owner: str,
-    ) -> Tuple[List["Instruction"], callable]:
-        """
-        Build close position instructions with multi-variant simulation.
-
-        Returns instructions and a selector function that picks the working
-        variant through simulation.
-
-        Args:
-            position: Position to close
-            owner: Owner wallet address
-
-        Returns:
-            Tuple of (instructions, selector_fn)
-        """
-        from solders.pubkey import Pubkey
-
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
-        position_state = fetch_position_by_nft(self._rpc, position.nft_mint)
-
-        if not position_state:
-            raise PositionNotFound.not_found(position.id)
-
-        instructions = []
-
-        # Decrease liquidity AND collect fees/rewards first
-        # (Always call even if liquidity is 0 to collect fees/rewards)
-        liquidity_delta = position_state["liquidity"]
-        decrease_ixs = build_decrease_liquidity_instructions(
-            position_state=position_state,
-            pool_state=pool_state,
-            owner=owner,
-            liquidity_delta=liquidity_delta,
-            amount_0_min=0,
-            amount_1_min=0,
-            rpc=self._rpc,
-        )
-        instructions.extend(decrease_ixs)
-
-        # Get close position candidates
-        nft_mint = Pubkey.from_string(position_state["nft_mint"])
-        owner_pubkey = Pubkey.from_string(owner)
-
-        # Detect NFT token program
-        token_program_nft = detect_token_program_for_mint(self._rpc, nft_mint)
-        nft_account = get_associated_token_address(owner_pubkey, nft_mint, token_program_nft)
-
-        candidates = build_close_position_candidates(
-            position_state=position_state,
-            pool_state=pool_state,
-            owner=owner,
-            nft_account=nft_account,
-            token_program_nft=token_program_nft,
-        )
-
-        # Return base instructions and candidates for simulation
-        return instructions, candidates
 
     def build_add_liquidity(
         self,
@@ -519,7 +367,7 @@ class RaydiumAdapter(ProtocolAdapter):
             )
 
         # Fetch fresh states
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
+        pool_state = self._fetch_pool_state(position.pool.address)
         position_state = fetch_position_by_nft(self._rpc, position.nft_mint)
 
         if not position_state:
@@ -586,7 +434,7 @@ class RaydiumAdapter(ProtocolAdapter):
                 position_id=position.id,
             )
 
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
+        pool_state = self._fetch_pool_state(position.pool.address)
         position_state = fetch_position_by_nft(self._rpc, position.nft_mint)
 
         if not position_state:
@@ -632,7 +480,7 @@ class RaydiumAdapter(ProtocolAdapter):
                 position_id=position.id,
             )
 
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
+        pool_state = self._fetch_pool_state(position.pool.address)
         position_state = fetch_position_by_nft(self._rpc, position.nft_mint)
 
         if not position_state:

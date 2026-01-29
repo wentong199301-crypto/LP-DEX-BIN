@@ -43,5 +43,6 @@ htmlcov/
 
 # Logs
 *.log
+dex_adapter_universal/log/
 
 CLAUDE.md

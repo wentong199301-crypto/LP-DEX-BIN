@@ -11,6 +11,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from dex_adapter_universal.types.evm_tokens import ETH_TOKEN_ADDRESSES, BSC_TOKEN_ADDRESSES
+
 
 def test_evm_chain_enum():
     """Test EVMChain enum values"""
@@ -44,17 +46,19 @@ def test_eth_token_resolution():
         resolve_token_address,
         get_token_address,
         NATIVE_TOKEN_ADDRESS,
+        ETH_TOKEN_ADDRESSES,
     )
 
     # Test symbol resolution
     assert resolve_token_address("ETH", 1) == NATIVE_TOKEN_ADDRESS
-    assert resolve_token_address("WETH", 1) == "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-    assert resolve_token_address("USDC", 1) == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-    assert resolve_token_address("USDT", 1) == "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    assert resolve_token_address("WETH", 1) == ETH_TOKEN_ADDRESSES["WETH"]
+    assert resolve_token_address("USDC", 1) == ETH_TOKEN_ADDRESSES["USDC"]
+    assert resolve_token_address("USDT", 1) == ETH_TOKEN_ADDRESSES["USDT"]
+    assert resolve_token_address("USD1", 1) == ETH_TOKEN_ADDRESSES["USD1"]
 
     # Test case-insensitive
     assert resolve_token_address("eth", 1) == NATIVE_TOKEN_ADDRESS
-    assert resolve_token_address("Usdc", 1) == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    assert resolve_token_address("Usdc", 1) == ETH_TOKEN_ADDRESSES["USDC"]
 
     # Test get_token_address (returns None for unknown)
     assert get_token_address("UNKNOWN_TOKEN", 1) is None
@@ -69,14 +73,16 @@ def test_bsc_token_resolution():
     from dex_adapter_universal.types.evm_tokens import (
         resolve_token_address,
         NATIVE_TOKEN_ADDRESS,
+        BSC_TOKEN_ADDRESSES,
     )
 
     # Test symbol resolution
     assert resolve_token_address("BNB", 56) == NATIVE_TOKEN_ADDRESS
-    assert resolve_token_address("WBNB", 56) == "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
-    assert resolve_token_address("USDC", 56) == "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
-    assert resolve_token_address("BUSD", 56) == "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
-    assert resolve_token_address("CAKE", 56) == "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82"
+    assert resolve_token_address("WBNB", 56) == BSC_TOKEN_ADDRESSES["WBNB"]
+    assert resolve_token_address("USDC", 56) == BSC_TOKEN_ADDRESSES["USDC"]
+    assert resolve_token_address("BUSD", 56) == BSC_TOKEN_ADDRESSES["BUSD"]
+    assert resolve_token_address("CAKE", 56) == BSC_TOKEN_ADDRESSES["CAKE"]
+    assert resolve_token_address("USD1", 56) == BSC_TOKEN_ADDRESSES["USD1"]
 
     print("  BSC token resolution: PASSED")
 
@@ -154,7 +160,8 @@ def test_is_native_token():
 
     assert is_native_token(NATIVE_TOKEN_ADDRESS) is True
     assert is_native_token(NATIVE_TOKEN_ADDRESS.lower()) is True
-    assert is_native_token("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2") is False
+    assert is_native_token(ETH_TOKEN_ADDRESSES["WETH"]) is False
+    # Dummy test address (not a real token)
     assert is_native_token("0x1234567890123456789012345678901234567890") is False
 
     print("  is_native_token: PASSED")
@@ -180,14 +187,14 @@ def test_evm_token_dataclass():
     from dex_adapter_universal.types.evm_tokens import EVMToken
 
     token = EVMToken(
-        address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        address=ETH_TOKEN_ADDRESSES["USDC"],
         symbol="USDC",
         decimals=6,
         name="USD Coin",
         chain_id=1,
     )
 
-    assert token.address == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    assert token.address == ETH_TOKEN_ADDRESSES["USDC"]
     assert token.symbol == "USDC"
     assert token.decimals == 6
     assert token.name == "USD Coin"
@@ -216,7 +223,7 @@ def test_oneinch_config():
     assert config.eth_chain_id == 1
     assert config.bsc_chain_id == 56
     assert config.timeout == 30.0
-    assert config.max_retries == 3
+    # Note: max_retries was removed - now uses global config.tx.max_retries (default: 10)
     assert config.gas_limit_multiplier == 1.1
 
     print("  OneInchConfig: PASSED")

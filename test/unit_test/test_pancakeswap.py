@@ -104,8 +104,6 @@ def test_pancakeswap_adapter_import():
 
     # Test class exists and has expected attributes
     assert PancakeSwapAdapter is not None
-    assert hasattr(PancakeSwapAdapter, 'get_balance')
-    assert hasattr(PancakeSwapAdapter, 'get_native_balance')
     assert hasattr(PancakeSwapAdapter, 'close')
 
     # Check adapter name
@@ -134,14 +132,15 @@ def test_bsc_token_resolution():
         resolve_token_address,
         get_token_decimals,
         NATIVE_TOKEN_ADDRESS,
+        BSC_TOKEN_ADDRESSES,
     )
 
     # BSC tokens commonly used with PancakeSwap
     assert resolve_token_address("BNB", 56) == NATIVE_TOKEN_ADDRESS
-    assert resolve_token_address("WBNB", 56) == "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
-    assert resolve_token_address("CAKE", 56) == "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82"
-    assert resolve_token_address("USDT", 56) == "0x55d398326f99059fF775485246999027B3197955"
-    assert resolve_token_address("BUSD", 56) == "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
+    assert resolve_token_address("WBNB", 56) == BSC_TOKEN_ADDRESSES["WBNB"]
+    assert resolve_token_address("CAKE", 56) == BSC_TOKEN_ADDRESSES["CAKE"]
+    assert resolve_token_address("USDT", 56) == BSC_TOKEN_ADDRESSES["USDT"]
+    assert resolve_token_address("BUSD", 56) == BSC_TOKEN_ADDRESSES["BUSD"]
 
     # Decimals
     assert get_token_decimals("BNB", 56) == 18
@@ -290,21 +289,6 @@ def test_adapter_math_methods():
     print("  adapter math methods: PASSED")
 
 
-def test_adapter_balance_methods():
-    """Test adapter has balance methods"""
-    print("Testing adapter balance methods...")
-
-    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
-
-    # Check class has balance methods
-    methods = ['get_balance', 'get_native_balance', 'get_token_balance']
-
-    for method in methods:
-        assert hasattr(PancakeSwapAdapter, method), f"Missing method: {method}"
-
-    print("  adapter balance methods: PASSED")
-
-
 def main():
     """Run all unit tests"""
     print("=" * 60)
@@ -327,7 +311,6 @@ def main():
         test_adapter_properties,
         test_adapter_liquidity_methods,
         test_adapter_math_methods,
-        test_adapter_balance_methods,
     ]
 
     passed = 0

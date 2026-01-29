@@ -9,7 +9,7 @@ import logging
 import math
 import time
 from decimal import Decimal
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union
 
 try:
     from web3 import Web3
@@ -22,7 +22,7 @@ from ...types.result import TxResult, TxStatus
 from ...types.pool import Pool
 from ...types.position import Position
 from ...types.price import PriceRange, RangeMode
-from ...types.common import Token
+from ...types.common import Token, STABLECOINS
 from ...types.evm_tokens import (
     resolve_token_address,
     get_token_decimals,
@@ -31,8 +31,8 @@ from ...types.evm_tokens import (
     get_native_symbol,
     get_wrapped_native_address,
 )
-from ...infra.evm_signer import EVMSigner, create_web3, get_balance
-from ...errors import SignerError, ConfigurationError
+from ...infra.evm_signer import EVMSigner, create_web3
+from ...errors import SignerError, ConfigurationError, ErrorCode
 from ...config import config as global_config
 
 from .api import (
@@ -418,6 +418,82 @@ class PancakeSwapAdapter:
         """PancakeSwap V3 Factory address"""
         return PANCAKESWAP_FACTORY_ADDRESSES.get(self._chain_id, PANCAKESWAP_FACTORY_ADDRESSES[56])
 
+    def wrap_native(self, amount: Decimal) -> str:
+        """
+        Wrap native BNB into WBNB.
+
+        Args:
+            amount: Amount of BNB to wrap (UI units, e.g. Decimal("0.01"))
+
+        Returns:
+            Transaction hash
+        """
+        if not self._signer:
+            raise SignerError.missing("Signer required for wrap")
+
+        wbnb_address = get_wrapped_native_address(self._chain_id)
+        raw_amount = int(amount * Decimal(10**18))
+
+        wbnb_abi = [{"constant": False, "inputs": [], "name": "deposit", "outputs": [], "stateMutability": "payable", "type": "function"}]
+        contract = self._web3.eth.contract(
+            address=self._web3.to_checksum_address(wbnb_address), abi=wbnb_abi
+        )
+
+        tx = contract.functions.deposit().build_transaction({
+            "from": self.address,
+            "value": raw_amount,
+            "gas": 50000,
+            "gasPrice": self._web3.eth.gas_price,
+            "nonce": self._web3.eth.get_transaction_count(self.address),
+            "chainId": self._chain_id,
+        })
+
+        raw_tx, tx_hash_hex = self._signer.sign_transaction(tx)
+        self._web3.eth.send_raw_transaction(raw_tx)
+        receipt = self._web3.eth.wait_for_transaction_receipt(bytes.fromhex(tx_hash_hex), timeout=60)
+
+        status = "OK" if receipt["status"] == 1 else "FAILED"
+        logger.info(f"Wrap {amount} BNB -> WBNB: {status} (tx: {tx_hash_hex})")
+        return tx_hash_hex
+
+    def unwrap_native(self, amount: Decimal) -> str:
+        """
+        Unwrap WBNB back to native BNB.
+
+        Args:
+            amount: Amount of WBNB to unwrap (UI units, e.g. Decimal("0.01"))
+
+        Returns:
+            Transaction hash
+        """
+        if not self._signer:
+            raise SignerError.missing("Signer required for unwrap")
+
+        wbnb_address = get_wrapped_native_address(self._chain_id)
+        raw_amount = int(amount * Decimal(10**18))
+
+        wbnb_abi = [{"constant": False, "inputs": [{"name": "wad", "type": "uint256"}], "name": "withdraw", "outputs": [], "type": "function"}]
+        contract = self._web3.eth.contract(
+            address=self._web3.to_checksum_address(wbnb_address), abi=wbnb_abi
+        )
+
+        tx = contract.functions.withdraw(raw_amount).build_transaction({
+            "from": self.address,
+            "value": 0,
+            "gas": 50000,
+            "gasPrice": self._web3.eth.gas_price,
+            "nonce": self._web3.eth.get_transaction_count(self.address),
+            "chainId": self._chain_id,
+        })
+
+        raw_tx, tx_hash_hex = self._signer.sign_transaction(tx)
+        self._web3.eth.send_raw_transaction(raw_tx)
+        receipt = self._web3.eth.wait_for_transaction_receipt(bytes.fromhex(tx_hash_hex), timeout=60)
+
+        status = "OK" if receipt["status"] == 1 else "FAILED"
+        logger.info(f"Unwrap {amount} WBNB -> BNB: {status} (tx: {tx_hash_hex})")
+        return tx_hash_hex
+
     def _get_position_manager_contract(self):
         """Get Position Manager contract instance"""
         return self._web3.eth.contract(
@@ -465,39 +541,6 @@ class PancakeSwapAdapter:
         """Get token decimals"""
         return get_token_decimals(token, self._chain_id)
 
-    def get_balance(self, token: str) -> Decimal:
-        """
-        Get token balance
-
-        Args:
-            token: Token symbol or address
-
-        Returns:
-            Balance in UI units
-        """
-        if not self._signer:
-            raise SignerError.not_configured()
-
-        token_address = resolve_token_address(token, self._chain_id)
-        decimals = self._get_decimals(token)
-
-        raw_balance = get_balance(
-            self._web3,
-            self._signer.address,
-            token_address if not is_native_token(token_address) else None,
-        )
-
-        return Decimal(raw_balance) / Decimal(10 ** decimals)
-
-    def get_native_balance(self) -> Decimal:
-        """Get native token balance (BNB or ETH)"""
-        native = get_native_symbol(self._chain_id)
-        return self.get_balance(native)
-
-    def get_token_balance(self, token: str) -> Decimal:
-        """Get ERC20 token balance"""
-        return self.get_balance(token)
-
     # =========================================================================
     # V3 Math Helper Functions
     # =========================================================================
@@ -542,6 +585,61 @@ class PancakeSwapAdapter:
         if round_up:
             return ((tick + tick_spacing - 1) // tick_spacing) * tick_spacing
         return (tick // tick_spacing) * tick_spacing
+
+    def _calculate_tvl(
+        self,
+        pool_address: str,
+        token0_contract,
+        token1_contract,
+        decimals0: int,
+        decimals1: int,
+        price: Decimal,
+        token0_symbol: str = "",
+        token1_symbol: str = "",
+    ) -> Decimal:
+        """
+        Calculate TVL from pool token balances.
+
+        Args:
+            pool_address: Pool contract address
+            token0_contract: Token0 contract instance
+            token1_contract: Token1 contract instance
+            decimals0: Token0 decimals
+            decimals1: Token1 decimals
+            price: Token0 price in Token1 terms
+            token0_symbol: Token0 symbol (for stablecoin detection)
+            token1_symbol: Token1 symbol (for stablecoin detection)
+
+        Returns:
+            TVL in USD
+        """
+        try:
+            pool_addr = Web3.to_checksum_address(pool_address)
+
+            balance0_raw = token0_contract.functions.balanceOf(pool_addr).call()
+            balance1_raw = token1_contract.functions.balanceOf(pool_addr).call()
+
+            balance0 = Decimal(balance0_raw) / Decimal(10 ** decimals0)
+            balance1 = Decimal(balance1_raw) / Decimal(10 ** decimals1)
+
+            # Detect which token is the stablecoin
+            token0_is_stable = token0_symbol.upper() in STABLECOINS
+            token1_is_stable = token1_symbol.upper() in STABLECOINS
+
+            if token0_is_stable and not token1_is_stable:
+                # Token0 is stablecoin: TVL = balance0 + (balance1 * price_of_token1_in_usd)
+                # price = token0/token1, so price_of_token1_in_usd = 1/price
+                if price > 0:
+                    tvl = balance0 + (balance1 / price)
+                else:
+                    tvl = balance0
+            else:
+                # Token1 is stablecoin (or both/neither): TVL = (balance0 * price) + balance1
+                tvl = (balance0 * price) + balance1
+
+            return tvl
+        except Exception:
+            return Decimal(0)
 
     # =========================================================================
     # Pool Methods
@@ -622,6 +720,18 @@ class PancakeSwapAdapter:
             token0_obj = Token(mint=addr0, symbol=symbol0, decimals=decimals0)
             token1_obj = Token(mint=addr1, symbol=symbol1, decimals=decimals1)
 
+            # Calculate TVL from pool token balances
+            tvl_usd = self._calculate_tvl(
+                pool_address=pool_address,
+                token0_contract=token0_contract,
+                token1_contract=token1_contract,
+                decimals0=decimals0,
+                decimals1=decimals1,
+                price=price,
+                token0_symbol=symbol0,
+                token1_symbol=symbol1,
+            )
+
             return Pool(
                 address=pool_address,
                 dex="pancakeswap",
@@ -629,6 +739,7 @@ class PancakeSwapAdapter:
                 token0=token0_obj,
                 token1=token1_obj,
                 price=price,
+                tvl_usd=tvl_usd,
                 fee_rate=Decimal(fee) / Decimal(1_000_000),
                 tick_spacing=tick_spacing,
                 current_tick=current_tick,
@@ -692,6 +803,18 @@ class PancakeSwapAdapter:
             token0_obj = Token(mint=token0_addr, symbol=symbol0, decimals=decimals0)
             token1_obj = Token(mint=token1_addr, symbol=symbol1, decimals=decimals1)
 
+            # Calculate TVL from pool token balances
+            tvl_usd = self._calculate_tvl(
+                pool_address=pool_address,
+                token0_contract=token0_contract,
+                token1_contract=token1_contract,
+                decimals0=decimals0,
+                decimals1=decimals1,
+                price=price,
+                token0_symbol=symbol0,
+                token1_symbol=symbol1,
+            )
+
             return Pool(
                 address=pool_address,
                 dex="pancakeswap",
@@ -699,6 +822,7 @@ class PancakeSwapAdapter:
                 token0=token0_obj,
                 token1=token1_obj,
                 price=price,
+                tvl_usd=tvl_usd,
                 fee_rate=Decimal(fee) / Decimal(1_000_000),
                 tick_spacing=tick_spacing,
                 current_tick=current_tick,
@@ -856,7 +980,7 @@ class PancakeSwapAdapter:
         price_range: PriceRange,
         amount0: Optional[Decimal] = None,
         amount1: Optional[Decimal] = None,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """
         Open a new liquidity position
@@ -866,13 +990,17 @@ class PancakeSwapAdapter:
             price_range: Price range for the position
             amount0: Amount of token0 (optional)
             amount1: Amount of token1 (optional)
-            slippage_bps: Slippage tolerance in basis points
+            slippage_bps: Slippage tolerance in basis points (uses config default if not specified)
 
         Returns:
             TxResult with position token ID in metadata
         """
         if not self._signer:
             raise SignerError.not_configured()
+
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = global_config.trading.default_lp_slippage_bps
 
         if amount0 is None and amount1 is None:
             raise ConfigurationError.missing("amount0 or amount1")
@@ -887,10 +1015,13 @@ class PancakeSwapAdapter:
             raw_amount0 = int((amount0 or Decimal(0)) * Decimal(10 ** decimals0))
             raw_amount1 = int((amount1 or Decimal(0)) * Decimal(10 ** decimals1))
 
-            # Calculate minimum amounts with slippage
-            slippage_factor = Decimal(10000 - slippage_bps) / Decimal(10000)
-            min_amount0 = int(Decimal(raw_amount0) * slippage_factor)
-            min_amount1 = int(Decimal(raw_amount1) * slippage_factor)
+            # For minting, set min amounts to 0.
+            # The tick range already defines the price bounds, and the pool
+            # calculates the optimal token ratio — the actual deposited amounts
+            # may be less than desired. Applying slippage to desired amounts
+            # causes "Price slippage check" reverts.
+            min_amount0 = 0
+            min_amount1 = 0
 
             # Handle token approvals
             token0_addr = pool.token0.mint
@@ -912,43 +1043,34 @@ class PancakeSwapAdapter:
                     return approval
 
             # Build mint parameters
-            deadline = int(time.time()) + 1200  # 20 minutes
+            fee = pool.metadata.get("fee", 2500)
 
-            mint_params = (
-                Web3.to_checksum_address(token0_addr),
-                Web3.to_checksum_address(token1_addr),
-                pool.metadata.get("fee", 2500),
-                tick_lower,
-                tick_upper,
-                raw_amount0,
-                raw_amount1,
-                min_amount0,
-                min_amount1,
-                Web3.to_checksum_address(self._signer.address),
-                deadline,
-            )
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds  # 20 minutes
+                mint_params = (
+                    Web3.to_checksum_address(token0_addr),
+                    Web3.to_checksum_address(token1_addr),
+                    fee,
+                    tick_lower,
+                    tick_upper,
+                    raw_amount0,
+                    raw_amount1,
+                    min_amount0,
+                    min_amount1,
+                    Web3.to_checksum_address(self._signer.address),
+                    deadline,
+                )
 
-            # Build transaction
-            pm = self._get_position_manager_contract()
-            tx = pm.functions.mint(mint_params).build_transaction({
-                "from": self._signer.address,
-                "value": native_value,
-                "gas": 500000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
+                pm = self._get_position_manager_contract()
+                return pm.functions.mint(mint_params).build_transaction({
+                    "from": self._signer.address,
+                    "value": native_value,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._web3.eth.get_transaction_count(self._signer.address),
+                    "chainId": self._chain_id,
+                })
 
-            # Add gas price
-            self._add_gas_price(tx)
-
-            # Sign and send
-            result = self._signer.sign_and_send(
-                self._web3,
-                tx,
-                wait_for_receipt=True,
-            )
-
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("open_position", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to open position: {e}")
@@ -959,7 +1081,7 @@ class PancakeSwapAdapter:
         position: Position,
         amount0: Decimal,
         amount1: Decimal,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """
         Add liquidity to existing position
@@ -968,13 +1090,17 @@ class PancakeSwapAdapter:
             position: Position to add liquidity to
             amount0: Amount of token0 to add
             amount1: Amount of token1 to add
-            slippage_bps: Slippage tolerance in basis points
+            slippage_bps: Slippage tolerance in basis points (uses config default if not specified)
 
         Returns:
             TxResult
         """
         if not self._signer:
             raise SignerError.not_configured()
+
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = global_config.trading.default_lp_slippage_bps
 
         try:
             token_id = int(position.id)
@@ -1018,36 +1144,27 @@ class PancakeSwapAdapter:
                     return approval
 
             # Build increase liquidity parameters
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                increase_params = (
+                    token_id,
+                    raw_amount0,
+                    raw_amount1,
+                    min_amount0,
+                    min_amount1,
+                    deadline,
+                )
 
-            increase_params = (
-                token_id,
-                raw_amount0,
-                raw_amount1,
-                min_amount0,
-                min_amount1,
-                deadline,
-            )
+                pm = self._get_position_manager_contract()
+                return pm.functions.increaseLiquidity(increase_params).build_transaction({
+                    "from": self._signer.address,
+                    "value": native_value,
+                    "gas": 400000,
+                    "nonce": self._web3.eth.get_transaction_count(self._signer.address),
+                    "chainId": self._chain_id,
+                })
 
-            # Build transaction
-            pm = self._get_position_manager_contract()
-            tx = pm.functions.increaseLiquidity(increase_params).build_transaction({
-                "from": self._signer.address,
-                "value": native_value,
-                "gas": 400000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
-
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(
-                self._web3,
-                tx,
-                wait_for_receipt=True,
-            )
-
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("add_liquidity", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to add liquidity: {e}")
@@ -1057,7 +1174,7 @@ class PancakeSwapAdapter:
         self,
         position: Position,
         percent: float = 100.0,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """
         Remove liquidity from position
@@ -1065,7 +1182,7 @@ class PancakeSwapAdapter:
         Args:
             position: Position to remove liquidity from
             percent: Percentage of liquidity to remove (0-100)
-            slippage_bps: Slippage tolerance in basis points
+            slippage_bps: Slippage tolerance in basis points (uses config default if not specified)
 
         Returns:
             TxResult
@@ -1073,11 +1190,15 @@ class PancakeSwapAdapter:
         if not self._signer:
             raise SignerError.not_configured()
 
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = global_config.trading.default_lp_slippage_bps
+
         try:
             token_id = int(position.id)
 
-            # Calculate liquidity to remove
-            liquidity_to_remove = int(position.liquidity * percent / 100)
+            # Calculate liquidity to remove (use integer math to avoid float precision loss)
+            liquidity_to_remove = position.liquidity * int(percent) // 100
             if liquidity_to_remove == 0:
                 return TxResult.skipped("No liquidity to remove")
 
@@ -1089,35 +1210,26 @@ class PancakeSwapAdapter:
             amount1_min = int(expected_amount1 * slippage_factor * Decimal(10 ** position.pool.token1.decimals))
 
             # Build decrease liquidity parameters
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                decrease_params = (
+                    token_id,
+                    liquidity_to_remove,
+                    amount0_min,
+                    amount1_min,
+                    deadline,
+                )
 
-            decrease_params = (
-                token_id,
-                liquidity_to_remove,
-                amount0_min,
-                amount1_min,
-                deadline,
-            )
+                pm = self._get_position_manager_contract()
+                return pm.functions.decreaseLiquidity(decrease_params).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": 300000,
+                    "nonce": self._web3.eth.get_transaction_count(self._signer.address),
+                    "chainId": self._chain_id,
+                })
 
-            # Build transaction
-            pm = self._get_position_manager_contract()
-            tx = pm.functions.decreaseLiquidity(decrease_params).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 300000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
-
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(
-                self._web3,
-                tx,
-                wait_for_receipt=True,
-            )
-
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("remove_liquidity", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to remove liquidity: {e}")
@@ -1141,50 +1253,79 @@ class PancakeSwapAdapter:
 
             # Build collect parameters (collect max uint128)
             max_uint128 = 2**128 - 1
-            collect_params = (
-                token_id,
-                Web3.to_checksum_address(self._signer.address),
-                max_uint128,
-                max_uint128,
-            )
 
-            # Build transaction
-            pm = self._get_position_manager_contract()
-            tx = pm.functions.collect(collect_params).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 200000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
+            def build_tx():
+                collect_params = (
+                    token_id,
+                    Web3.to_checksum_address(self._signer.address),
+                    max_uint128,
+                    max_uint128,
+                )
 
-            self._add_gas_price(tx)
+                pm = self._get_position_manager_contract()
+                return pm.functions.collect(collect_params).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": 200000,
+                    "nonce": self._web3.eth.get_transaction_count(self._signer.address),
+                    "chainId": self._chain_id,
+                })
 
-            result = self._signer.sign_and_send(
-                self._web3,
-                tx,
-                wait_for_receipt=True,
-            )
-
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("claim_fees", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to claim fees: {e}")
             return TxResult.failed(str(e))
 
-    def close_position(self, position: Position) -> TxResult:
+    def close_position(
+        self,
+        position: Optional[Position] = None,
+    ) -> Union[TxResult, List[TxResult]]:
         """
-        Close position (remove all liquidity, collect fees, burn NFT)
+        Close position(s) (remove all liquidity, collect fees, burn NFT)
 
         Args:
-            position: Position to close
+            position: Position to close. If None, closes all positions.
 
         Returns:
-            TxResult
+            TxResult for single position, List[TxResult] for all positions
+
+        Examples:
+            # Close a specific position
+            result = adapter.close_position(position)
+
+            # Close all positions
+            results = adapter.close_position()
         """
         if not self._signer:
             raise SignerError.not_configured()
 
+        # If no position provided, close all positions
+        if position is None:
+            positions = self.get_positions()
+            if not positions:
+                logger.info("No positions to close")
+                return []
+
+            results = []
+            for pos in positions:
+                logger.info(f"Closing position {pos.id}...")
+                try:
+                    result = self._close_single_position(pos)
+                    results.append(result)
+                    if result.is_success:
+                        logger.info(f"  Closed: {result.signature}")
+                    else:
+                        logger.warning(f"  Failed: {result.error}")
+                except Exception as e:
+                    logger.error(f"  Error closing position {pos.id}: {e}")
+                    results.append(TxResult.failed(str(e)))
+            return results
+
+        return self._close_single_position(position)
+
+    def _close_single_position(self, position: Position) -> TxResult:
+        """Close a single position"""
         try:
             token_id = int(position.id)
 
@@ -1200,25 +1341,42 @@ class PancakeSwapAdapter:
                 # Continue even if collect fails (might have nothing to collect)
                 logger.warning(f"Collect failed during close: {collect_result.error}")
 
-            # Step 3: Burn the NFT
-            pm = self._get_position_manager_contract()
-            tx = pm.functions.burn(token_id).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 100000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
+            # Step 3: Burn the NFT with retry
+            def build_burn_tx():
+                pm = self._get_position_manager_contract()
+                return pm.functions.burn(token_id).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": 150000,  # Burn needs ~90-115k gas
+                    "nonce": self._web3.eth.get_transaction_count(self._signer.address),
+                    "chainId": self._chain_id,
+                })
 
-            self._add_gas_price(tx)
+            burn_result = self._execute_with_retry("close_position_burn", build_burn_tx)
+            if not burn_result.is_success:
+                return burn_result
 
-            result = self._signer.sign_and_send(
-                self._web3,
-                tx,
-                wait_for_receipt=True,
-            )
+            # Step 4: Unwrap WBNB to native BNB if either token is wrapped native
+            wrapped_native = get_wrapped_native_address(self._chain_id)
+            token0_is_wrapped = position.pool.token0.mint.lower() == wrapped_native.lower()
+            token1_is_wrapped = position.pool.token1.mint.lower() == wrapped_native.lower()
 
-            return self._result_to_tx_result(result)
+            if token0_is_wrapped or token1_is_wrapped:
+                try:
+                    wbnb_contract = self._get_token_contract(wrapped_native)
+                    wbnb_balance_raw = wbnb_contract.functions.balanceOf(
+                        Web3.to_checksum_address(self._signer.address)
+                    ).call()
+
+                    if wbnb_balance_raw > 0:
+                        wbnb_balance = Decimal(wbnb_balance_raw) / Decimal(10**18)
+                        logger.info(f"Unwrapping {wbnb_balance} WBNB -> BNB...")
+                        self.unwrap_native(wbnb_balance)
+                        logger.info("Unwrap complete")
+                except Exception as e:
+                    logger.warning(f"Failed to unwrap WBNB after close: {e}")
+
+            return burn_result
 
         except Exception as e:
             logger.error(f"Failed to close position: {e}")
@@ -1333,7 +1491,7 @@ class PancakeSwapAdapter:
 
     def _add_gas_price(self, tx: Dict[str, Any]):
         """Add gas price to transaction with minimum priority fee from config
-        
+
         Note: web3 v7's build_transaction may auto-add EIP-1559 params.
         For BSC (legacy gas), we must remove them before adding gasPrice.
         """
@@ -1343,7 +1501,7 @@ class PancakeSwapAdapter:
             # Use configurable priority fee (default 0.1 gwei for minimum cost)
             priority_fee_gwei = global_config.pancakeswap.priority_fee_gwei
             max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
-            max_fee = int(base_fee * 2) + max_priority_fee
+            max_fee = int(base_fee * global_config.pancakeswap.base_fee_multiplier) + max_priority_fee
             tx["maxFeePerGas"] = max_fee
             tx["maxPriorityFeePerGas"] = max_priority_fee
             # Remove legacy gasPrice if present
@@ -1354,6 +1512,116 @@ class PancakeSwapAdapter:
             tx.pop("maxFeePerGas", None)
             tx.pop("maxPriorityFeePerGas", None)
             tx["gasPrice"] = self._web3.eth.gas_price
+
+    def _is_recoverable_error(self, error_str: str) -> bool:
+        """Check if error is recoverable (network/timeout issues)"""
+        error_lower = error_str.lower()
+        recoverable_keywords = [
+            "timeout", "connection", "network", "rate limit",
+            "too many requests", "503", "502", "504",
+            "temporarily unavailable", "service unavailable",
+            "econnreset", "enotfound", "etimedout",
+            "socket hang up", "request failed", "nonce too low",
+            "replacement transaction underpriced",
+        ]
+        return any(keyword in error_lower for keyword in recoverable_keywords)
+
+    def _is_slippage_error(self, error_str: str) -> bool:
+        """Check if error is slippage-related"""
+        error_lower = error_str.lower()
+        slippage_keywords = [
+            "slippage", "price moved", "insufficient output",
+            "price impact", "price change", "amount out less than minimum",
+            "exceeds slippage", "price slippage", "too little received",
+        ]
+        return any(keyword in error_lower for keyword in slippage_keywords)
+
+    def _execute_with_retry(
+        self,
+        operation_name: str,
+        tx_builder: callable,
+        max_retries: Optional[int] = None,
+        retry_delay: Optional[float] = None,
+    ) -> TxResult:
+        """
+        Execute a transaction with automatic retry for recoverable errors.
+
+        Args:
+            operation_name: Name for logging
+            tx_builder: Callable that builds and returns the transaction dict
+            max_retries: Max retry attempts (defaults to config.tx.lp_max_retries)
+            retry_delay: Base delay between retries (defaults to config.tx.retry_delay)
+
+        Returns:
+            TxResult
+        """
+        max_retries = max_retries if max_retries is not None else global_config.tx.lp_max_retries
+        retry_delay = retry_delay if retry_delay is not None else global_config.tx.retry_delay
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                # Build fresh transaction (gets updated nonce)
+                tx = tx_builder()
+
+                # Add gas price
+                self._add_gas_price(tx)
+
+                # Sign and send
+                result = self._signer.sign_and_send(
+                    self._web3,
+                    tx,
+                    wait_for_receipt=True,
+                )
+
+                tx_result = self._result_to_tx_result(result)
+
+                if tx_result.is_success:
+                    if attempt > 0:
+                        logger.info(f"{operation_name} succeeded after {attempt + 1} attempts")
+                    return tx_result
+
+                # Check if recoverable
+                if result.get("error"):
+                    error_str = str(result.get("error", ""))
+                    if self._is_slippage_error(error_str) and attempt < max_retries - 1:
+                        logger.warning(f"{operation_name} slippage error (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+                    if self._is_recoverable_error(error_str) and attempt < max_retries - 1:
+                        logger.warning(f"{operation_name} recoverable error (attempt {attempt + 1}/{max_retries}): {error_str}")
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+
+                return tx_result
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+
+                if self._is_slippage_error(error_str):
+                    logger.warning(f"{operation_name} slippage error (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    return TxResult.failed(
+                        f"Slippage exceeded after {max_retries} attempts: {e}",
+                        recoverable=True,
+                        error_code=ErrorCode.SLIPPAGE_EXCEEDED,
+                    )
+
+                if self._is_recoverable_error(error_str) and attempt < max_retries - 1:
+                    logger.warning(f"{operation_name} recoverable error (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+
+                logger.error(f"{operation_name} failed: {e}")
+                return TxResult.failed(str(e), recoverable=self._is_recoverable_error(error_str))
+
+        error_msg = f"Max retries ({max_retries}) exceeded for {operation_name}"
+        if last_error:
+            error_msg += f". Last error: {last_error}"
+        return TxResult.failed(error_msg, recoverable=True)
 
     def close(self):
         """Cleanup (no-op, kept for compatibility)"""

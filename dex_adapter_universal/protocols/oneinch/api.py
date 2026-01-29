@@ -65,7 +65,8 @@ class OneInchAPI:
         self._api_key = api_key or global_config.oneinch.api_key
         self._base_url = base_url or global_config.oneinch.base_url
         self._timeout = timeout or global_config.oneinch.timeout
-        self._max_retries = max_retries or global_config.oneinch.max_retries
+        # Note: Retry uses global config.tx.swap_max_retries (default: 5)
+        self._max_retries = max_retries or global_config.tx.swap_max_retries
         self._client: Optional[httpx.Client] = None
 
         if not self._api_key:
@@ -139,6 +140,8 @@ class OneInchAPI:
                 error_msg = f"HTTP {e.response.status_code}"
                 try:
                     error_data = e.response.json()
+                    # Log full error for debugging
+                    logger.debug(f"1inch API full error response: {error_data}")
                     if "error" in error_data:
                         error_msg = error_data["error"]
                     elif "description" in error_data:
@@ -151,21 +154,21 @@ class OneInchAPI:
                     error_msg = e.response.text[:500] if e.response.text else error_msg
 
                 logger.warning(f"1inch API error (attempt {attempt + 1}): {error_msg}")
-                last_error = RuntimeError(f"1inch API error: {error_msg}")
+                last_error = e  # Preserve original exception for chaining
 
                 # Don't retry client errors (4xx)
                 if 400 <= e.response.status_code < 500:
-                    raise last_error
+                    raise RuntimeError(f"1inch API error: {error_msg}") from e
 
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as e:
                 logger.warning(f"1inch API timeout (attempt {attempt + 1})")
-                last_error = RuntimeError("1inch API timeout")
+                last_error = e  # Preserve original exception for chaining
 
             except httpx.RequestError as e:
                 logger.warning(f"1inch API request error (attempt {attempt + 1}): {e}")
-                last_error = RuntimeError(f"1inch API request error: {e}")
+                last_error = e  # Preserve original exception for chaining
 
-        raise last_error or RuntimeError("1inch API request failed")
+        raise RuntimeError(f"1inch API request failed after {self._max_retries} attempts") from last_error
 
     def get_quote(
         self,

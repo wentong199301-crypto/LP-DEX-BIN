@@ -27,7 +27,7 @@ class ProtocolRegistry:
         # Register adapter class
         ProtocolRegistry.register("raydium", RaydiumAdapter)
 
-        # Get adapter instance
+        # Get adapter instance (creates new instance each time)
         adapter = ProtocolRegistry.get("raydium", rpc_client)
 
         # List available protocols
@@ -36,9 +36,6 @@ class ProtocolRegistry:
 
     # Registered adapter classes
     _adapters: Dict[str, Type["ProtocolAdapter"]] = {}
-
-    # Cached adapter instances (keyed by protocol + rpc endpoint)
-    _instances: Dict[str, "ProtocolAdapter"] = {}
 
     @classmethod
     def register(cls, name: str, adapter_class: Type["ProtocolAdapter"]):
@@ -57,15 +54,13 @@ class ProtocolRegistry:
         cls,
         name: str,
         rpc: "RpcClient",
-        cache: bool = True,
     ) -> "ProtocolAdapter":
         """
-        Get adapter instance for protocol
+        Get adapter instance for protocol (creates new instance each time)
 
         Args:
             name: Protocol name
             rpc: RPC client
-            cache: Whether to cache the instance
 
         Returns:
             Protocol adapter instance
@@ -85,20 +80,9 @@ class ProtocolRegistry:
                 "protocol", f"Unknown protocol: {name}. Available protocols: {available}"
             )
 
-        # Check cache - use id(rpc) to ensure we don't reuse adapters across different
-        # RPC client instances (which may have different configs like timeout, commitment, etc.)
-        cache_key = f"{name_lower}:{id(rpc)}"
-        if cache and cache_key in cls._instances:
-            return cls._instances[cache_key]
-
         # Create new instance
         adapter_class = cls._adapters[name_lower]
-        instance = adapter_class(rpc)
-
-        if cache:
-            cls._instances[cache_key] = instance
-
-        return instance
+        return adapter_class(rpc)
 
     @classmethod
     def list(cls) -> list[str]:
@@ -111,11 +95,6 @@ class ProtocolRegistry:
     def is_registered(cls, name: str) -> bool:
         """Check if protocol is registered"""
         return name.lower() in cls._adapters
-
-    @classmethod
-    def clear_cache(cls):
-        """Clear cached adapter instances"""
-        cls._instances.clear()
 
     @classmethod
     def _try_load_adapter(cls, name: str):
@@ -132,6 +111,9 @@ class ProtocolRegistry:
             # Access Jupiter via SwapModule instead.
         except ImportError as e:
             logger.warning(f"Failed to load adapter '{name}': {e}")
+        except Exception as e:
+            # Catch runtime errors during import (syntax errors, missing dependencies, etc.)
+            logger.error(f"Error loading adapter '{name}': {type(e).__name__}: {e}")
 
     @classmethod
     def _ensure_loaded(cls):

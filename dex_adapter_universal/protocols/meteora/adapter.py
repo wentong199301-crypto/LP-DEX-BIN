@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 from ..base import ProtocolAdapter
 from ...types import Pool, Position, PriceRange, RangeMode, Token
+from ...types.common import STABLECOINS
+from ...types.solana_tokens import get_token_symbol
 from ...infra import RpcClient
 from ...errors import PoolUnavailable, PositionNotFound, ConfigurationError, OperationNotSupported
 
@@ -46,6 +48,7 @@ from .instructions import (
     build_remove_liquidity_instructions,
     build_close_position_instructions as build_close_position_ixs,
     build_claim_fee_instructions,
+    build_unwrap_sol_instruction,
     WRAPPED_SOL_MINT,
 )
 
@@ -71,30 +74,18 @@ class MeteoraAdapter(ProtocolAdapter):
 
     def __init__(self, rpc: RpcClient):
         super().__init__(rpc)
-        self._pool_cache: Dict[str, Dict] = {}
-        self._decimals_cache: Dict[str, int] = {}
 
     def _get_token_decimals(self, mint: str) -> int:
-        """
-        Fetch token decimals from mint account with caching
-
-        Note: This duplicates similar caching in JupiterAdapter. A shared
-        utility could consolidate this, but would require mixing types
-        layer with infrastructure dependencies.
-        """
-        if mint in self._decimals_cache:
-            return self._decimals_cache[mint]
-
+        """Fetch token decimals from mint account"""
         try:
             account = self._rpc.get_account_info(mint, encoding="jsonParsed")
             if account and "parsed" in account.get("data", {}):
-                decimals = account["data"]["parsed"]["info"]["decimals"]
-                self._decimals_cache[mint] = decimals
-                return decimals
+                return account["data"]["parsed"]["info"]["decimals"]
         except Exception:
             pass
 
-        # Default fallback (SOL-like tokens = 9 decimals)
+        # Default fallback (SOL-like tokens = 9 decimals) with warning
+        logger.warning(f"Could not determine decimals for mint {mint}, defaulting to 9")
         return 9
 
     # ========== Pool Operations ==========
@@ -104,11 +95,8 @@ class MeteoraAdapter(ProtocolAdapter):
         state = self._fetch_pool_state(pool_address)
         return self._state_to_pool(pool_address, state)
 
-    def _fetch_pool_state(self, pool_address: str, refresh: bool = False) -> Dict[str, Any]:
+    def _fetch_pool_state(self, pool_address: str) -> Dict[str, Any]:
         """Fetch and parse LbPair account"""
-        if not refresh and pool_address in self._pool_cache:
-            return self._pool_cache[pool_address]
-
         account = self._rpc.get_account_info(pool_address, encoding="base64")
         if not account:
             raise PoolUnavailable.not_found(pool_address)
@@ -129,9 +117,7 @@ class MeteoraAdapter(ProtocolAdapter):
         else:
             raise PoolUnavailable.invalid_state(pool_address, "Invalid data format")
 
-        state = self._parse_lb_pair(raw_data)
-        self._pool_cache[pool_address] = state
-        return state
+        return self._parse_lb_pair(raw_data)
 
     def _parse_lb_pair(self, data: bytes) -> Dict[str, Any]:
         """Parse LbPair account structure (DLMM v2)
@@ -177,6 +163,32 @@ class MeteoraAdapter(ProtocolAdapter):
             "base_factor": base_factor,
         }
 
+    def _fetch_pool_fee_from_api(self, pool_address: str) -> Optional[Decimal]:
+        """
+        Fetch base fee percentage from Meteora DLMM API.
+
+        Args:
+            pool_address: LbPair address
+
+        Returns:
+            Fee rate as Decimal (e.g., 0.001 for 0.1%), or None if fetch fails
+        """
+        import requests
+
+        try:
+            url = f"https://dlmm-api.meteora.ag/pair/{pool_address}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                # base_fee_percentage is like "0.1" meaning 0.1%
+                base_fee_pct = data.get("base_fee_percentage")
+                if base_fee_pct is not None:
+                    # Convert percentage to rate (0.1% -> 0.001)
+                    return Decimal(str(base_fee_pct)) / Decimal(100)
+        except Exception as e:
+            logger.debug(f"Failed to fetch fee from Meteora API for {pool_address}: {e}")
+        return None
+
     def _state_to_pool(self, address: str, state: Dict[str, Any]) -> Pool:
         """Convert parsed state to Pool"""
         # Fetch token decimals from mint accounts
@@ -190,11 +202,28 @@ class MeteoraAdapter(ProtocolAdapter):
             decimals_y,
         )
 
-        token_x = Token(mint=state["mint_x"], symbol="", decimals=decimals_x)
-        token_y = Token(mint=state["mint_y"], symbol="", decimals=decimals_y)
+        symbol_x = get_token_symbol(state["mint_x"]) or ""
+        symbol_y = get_token_symbol(state["mint_y"]) or ""
+        token_x = Token(mint=state["mint_x"], symbol=symbol_x, decimals=decimals_x)
+        token_y = Token(mint=state["mint_y"], symbol=symbol_y, decimals=decimals_y)
 
-        # Calculate fee rate from bin_step
-        fee_rate = Decimal(state["bin_step"]) / Decimal(10000)
+        # Fetch fee rate from Meteora API
+        fee_rate = self._fetch_pool_fee_from_api(address)
+        if fee_rate is None:
+            # Fallback: use bin_step as a rough estimate (not accurate)
+            fee_rate = Decimal(state["bin_step"]) / Decimal(10000)
+            logger.warning(f"Using bin_step fallback for fee rate on pool {address}")
+
+        # Calculate TVL from vault balances
+        tvl_usd = self._calculate_tvl(
+            vault_x=state["vault_x"],
+            vault_y=state["vault_y"],
+            decimals_x=decimals_x,
+            decimals_y=decimals_y,
+            price=price,
+            symbol_x=symbol_x,
+            symbol_y=symbol_y,
+        )
 
         return Pool(
             address=address,
@@ -203,6 +232,7 @@ class MeteoraAdapter(ProtocolAdapter):
             token0=token_x,
             token1=token_y,
             price=price,
+            tvl_usd=tvl_usd,
             fee_rate=fee_rate,
             bin_step=state["bin_step"],
             active_bin_id=state["active_id"],
@@ -211,6 +241,66 @@ class MeteoraAdapter(ProtocolAdapter):
                 "vault_y": state["vault_y"],
             },
         )
+
+    def _calculate_tvl(
+        self,
+        vault_x: str,
+        vault_y: str,
+        decimals_x: int,
+        decimals_y: int,
+        price: Decimal,
+        symbol_x: str = "",
+        symbol_y: str = "",
+    ) -> Decimal:
+        """
+        Calculate TVL from vault balances.
+
+        Args:
+            vault_x: Token X vault address
+            vault_y: Token Y vault address
+            decimals_x: Token X decimals
+            decimals_y: Token Y decimals
+            price: Token X price in Token Y terms
+            symbol_x: Token X symbol (for stablecoin detection)
+            symbol_y: Token Y symbol (for stablecoin detection)
+
+        Returns:
+            TVL in USD
+        """
+        try:
+            balance_x_raw = self._get_token_balance(vault_x)
+            balance_y_raw = self._get_token_balance(vault_y)
+
+            balance_x = Decimal(balance_x_raw) / Decimal(10 ** decimals_x)
+            balance_y = Decimal(balance_y_raw) / Decimal(10 ** decimals_y)
+
+            # Detect which token is the stablecoin
+            token_x_is_stable = symbol_x.upper() in STABLECOINS
+            token_y_is_stable = symbol_y.upper() in STABLECOINS
+
+            if token_x_is_stable and not token_y_is_stable:
+                # Token X is stablecoin: TVL = balance_x + (balance_y / price)
+                if price > 0:
+                    tvl = balance_x + (balance_y / price)
+                else:
+                    tvl = balance_x
+            else:
+                # Token Y is stablecoin (or both/neither): TVL = (balance_x * price) + balance_y
+                tvl = (balance_x * price) + balance_y
+
+            return tvl
+        except Exception:
+            return Decimal(0)
+
+    def _get_token_balance(self, token_account: str) -> int:
+        """Get token balance from a token account."""
+        try:
+            result = self._rpc.get_token_account_balance(token_account)
+            if result and "amount" in result:
+                return int(result["amount"])
+        except Exception:
+            pass
+        return 0
 
     # ========== Position Operations ==========
 
@@ -243,7 +333,7 @@ class MeteoraAdapter(ProtocolAdapter):
             {
                 "memcmp": {
                     "offset": 0,
-                    "bytes": base58.b58encode(ACCOUNT_DISCRIMINATORS["position_v2"]).decode("ascii"),
+                    "bytes": base58.b58encode(ACCOUNT_DISCRIMINATORS["position"]).decode("ascii"),
                 }
             },
             # Filter by owner at offset 40
@@ -343,14 +433,15 @@ class MeteoraAdapter(ProtocolAdapter):
         Returns:
             Position object or None if parsing fails
         """
-        # Minimum size check - need at least to offset 7920
-        if len(data) < 7920:
-            logger.debug(f"Position {address} data too small: {len(data)} bytes")
+        # Minimum size check for V1 position
+        min_size = POSITION_LOWER_BIN_ID_OFFSET + 8  # Need at least through upper_bin_id
+        if len(data) < min_size:
+            logger.debug(f"Position {address} data too small: {len(data)} bytes (need {min_size})")
             return None
 
         # Verify discriminator
         discriminator = data[0:8]
-        if discriminator != ACCOUNT_DISCRIMINATORS["position_v2"]:
+        if discriminator != ACCOUNT_DISCRIMINATORS["position"]:
             logger.debug(f"Position {address} has wrong discriminator")
             return None
 
@@ -361,7 +452,7 @@ class MeteoraAdapter(ProtocolAdapter):
             # Parse owner
             owner = self._pubkey_from_bytes(data[POSITION_OWNER_OFFSET:POSITION_OWNER_OFFSET + 32])
 
-            # Parse bin IDs at their known offsets
+            # Parse bin IDs
             lower_bin_id = struct.unpack_from("<i", data, POSITION_LOWER_BIN_ID_OFFSET)[0]
             upper_bin_id = struct.unpack_from("<i", data, POSITION_UPPER_BIN_ID_OFFSET)[0]
 
@@ -380,7 +471,7 @@ class MeteoraAdapter(ProtocolAdapter):
             liquidity_shares = []
             total_liquidity = 0
 
-            # Warn if position is wider than MAX_POSITION_WIDTH - liquidity may be undercounted
+            # Warn if position is wider than max - liquidity may be undercounted
             if position_width > MAX_POSITION_WIDTH:
                 logger.warning(
                     f"Position {address} has {position_width} bins but only reading first "
@@ -606,6 +697,20 @@ class MeteoraAdapter(ProtocolAdapter):
 
         width = upper_bin - lower_bin + 1
 
+        # Meteora Position V1 has a maximum width of 70 bins
+        # If width exceeds limit, shrink range symmetrically around active bin
+        MAX_POSITION_WIDTH = 70
+        if width > MAX_POSITION_WIDTH:
+            logger.warning(
+                f"Bin width {width} exceeds max {MAX_POSITION_WIDTH}, "
+                f"shrinking range around active bin {active_id}"
+            )
+            half_width = MAX_POSITION_WIDTH // 2
+            lower_bin = active_id - half_width
+            upper_bin = active_id + (MAX_POSITION_WIDTH - half_width - 1)
+            width = upper_bin - lower_bin + 1
+            logger.info(f"Adjusted bin range: {lower_bin} to {upper_bin} (width={width})")
+
         instructions = []
 
         # Initialize bin arrays if needed
@@ -638,13 +743,13 @@ class MeteoraAdapter(ProtocolAdapter):
             )
             instructions.extend(init_bitmap_ixs)
 
-        # Initialize position (use V1 - V2 has account size issues)
+        # Initialize position (use V1 - V2 has custom error issues)
+        # Width is already capped at MAX_POSITION_WIDTH above
         init_ixs, position_kp = build_initialize_position_instructions(
             lb_pair=pool.address,
             owner=owner,
             lower_bin_id=lower_bin,
             width=width,
-            use_v2=False,
         )
         instructions.extend(init_ixs)
 
@@ -679,9 +784,15 @@ class MeteoraAdapter(ProtocolAdapter):
         """
         Build instructions to close position
 
-        First removes all liquidity, then closes the position account.
+        Order of operations:
+        1. Claim any unclaimed fees (required before close)
+        2. Remove all liquidity
+        3. Close position account
+        4. Unwrap WSOL to native SOL (if pool has SOL)
+
+        The Meteora program checks that fees are claimed before allowing close.
         """
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
+        pool_state = self._fetch_pool_state(position.pool.address)
 
         # Build position_state dict with bin IDs
         position_state = {
@@ -691,7 +802,19 @@ class MeteoraAdapter(ProtocolAdapter):
 
         instructions = []
 
-        # First remove all liquidity if any (with rpc for Token-2022 support)
+        # Step 1: Claim fees first (required before close_position)
+        # The program checks fee debt is 0 before allowing close
+        claim_ixs = build_claim_fee_instructions(
+            lb_pair=position.pool.address,
+            pool_state=pool_state,
+            position=position.id,
+            position_state=position_state,
+            owner=owner,
+            rpc=self._rpc,
+        )
+        instructions.extend(claim_ixs)
+
+        # Step 2: Remove all liquidity if any (with rpc for Token-2022 support)
         if hasattr(position, 'bin_ids') and position.bin_ids:
             remove_ixs = build_remove_liquidity_instructions(
                 lb_pair=position.pool.address,
@@ -704,7 +827,7 @@ class MeteoraAdapter(ProtocolAdapter):
             )
             instructions.extend(remove_ixs)
 
-        # Close position
+        # Step 3: Close position
         close_ixs = build_close_position_ixs(
             lb_pair=position.pool.address,
             position=position.id,
@@ -712,6 +835,12 @@ class MeteoraAdapter(ProtocolAdapter):
             owner=owner,
         )
         instructions.extend(close_ixs)
+
+        # Step 4: Unwrap WSOL to native SOL if pool has SOL
+        # This converts any WSOL received back to native SOL
+        if pool_state["mint_x"] == WRAPPED_SOL_MINT or pool_state["mint_y"] == WRAPPED_SOL_MINT:
+            unwrap_ix = build_unwrap_sol_instruction(owner)
+            instructions.append(unwrap_ix)
 
         return instructions
 
@@ -724,7 +853,7 @@ class MeteoraAdapter(ProtocolAdapter):
         slippage_bps: int = 50,
     ) -> List["Instruction"]:
         """Build instructions to add liquidity to existing position"""
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
+        pool_state = self._fetch_pool_state(position.pool.address)
         active_id = pool_state["active_id"]
 
         amount_x_raw = int(amount0 * Decimal(10 ** position.pool.token0.decimals))
@@ -770,7 +899,7 @@ class MeteoraAdapter(ProtocolAdapter):
         slippage_bps: int = 50,
     ) -> List["Instruction"]:
         """Build instructions to remove liquidity"""
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
+        pool_state = self._fetch_pool_state(position.pool.address)
 
         if not hasattr(position, 'bin_ids') or not position.bin_ids:
             return []
@@ -795,7 +924,7 @@ class MeteoraAdapter(ProtocolAdapter):
         owner: str,
     ) -> List["Instruction"]:
         """Build instructions to claim fees"""
-        pool_state = self._fetch_pool_state(position.pool.address, refresh=True)
+        pool_state = self._fetch_pool_state(position.pool.address)
 
         # Build position_state dict with bin IDs
         position_state = {

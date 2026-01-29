@@ -8,9 +8,9 @@ Provides high-level operations:
 - LiquidityModule: LP operations
 """
 
-from .wallet import WalletModule
+from .wallet import WalletModule, Chain
 from .market import MarketModule
-from .swap import SwapModule, Chain
+from .swap import SwapModule
 from .liquidity import LiquidityModule
 
 __all__ = [

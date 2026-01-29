@@ -3,12 +3,14 @@ EVM Transaction Signer using web3.py
 
 Provides local signing for Ethereum and BSC transactions.
 Only supports local private key signing (no remote signer).
+Includes thread-safe nonce management for parallel transactions.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Optional, Dict, Any, Tuple
 
 try:
@@ -31,6 +33,132 @@ except ImportError:
 from ..errors import SignerError, ConfigurationError
 
 logger = logging.getLogger(__name__)
+
+
+class NonceManager:
+    """
+    Thread-safe nonce manager for EVM transactions.
+
+    Prevents nonce collisions when sending parallel transactions by:
+    1. Keeping track of pending nonces locally
+    2. Using a lock to prevent race conditions
+    3. Syncing with the chain when needed
+
+    Usage:
+        nonce_mgr = NonceManager()
+        nonce = nonce_mgr.get_nonce(web3, address)  # Thread-safe
+        # ... send transaction ...
+        nonce_mgr.confirm_nonce(address, nonce)  # On success
+        # or
+        nonce_mgr.release_nonce(address, nonce)  # On failure
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        # Track pending nonces per address: {address: next_nonce}
+        self._pending_nonces: Dict[str, int] = {}
+        # Track in-flight nonces to detect gaps: {address: set of pending nonces}
+        self._in_flight: Dict[str, set] = {}
+
+    def get_nonce(self, web3: "Web3", address: str) -> int:
+        """
+        Get the next available nonce for an address (thread-safe).
+
+        Args:
+            web3: Web3 instance
+            address: Wallet address
+
+        Returns:
+            Next nonce to use
+        """
+        address = address.lower()
+
+        with self._lock:
+            # Get on-chain nonce (includes pending in mempool)
+            chain_nonce = web3.eth.get_transaction_count(address, "pending")
+
+            # Get our tracked pending nonce
+            tracked_nonce = self._pending_nonces.get(address, chain_nonce)
+
+            # Use the higher of chain nonce or tracked nonce
+            # This handles cases where transactions were sent outside this manager
+            next_nonce = max(chain_nonce, tracked_nonce)
+
+            # Update tracked nonce for next call
+            self._pending_nonces[address] = next_nonce + 1
+
+            # Track in-flight nonce
+            if address not in self._in_flight:
+                self._in_flight[address] = set()
+            self._in_flight[address].add(next_nonce)
+
+            logger.debug(
+                f"NonceManager: address={address[:10]}... "
+                f"chain={chain_nonce} tracked={tracked_nonce} assigned={next_nonce}"
+            )
+
+            return next_nonce
+
+    def confirm_nonce(self, address: str, nonce: int) -> None:
+        """
+        Confirm a nonce was successfully used (transaction confirmed).
+
+        Args:
+            address: Wallet address
+            nonce: Nonce that was confirmed
+        """
+        address = address.lower()
+
+        with self._lock:
+            if address in self._in_flight:
+                self._in_flight[address].discard(nonce)
+
+    def release_nonce(self, address: str, nonce: int) -> None:
+        """
+        Release a nonce that failed to be used (transaction failed before broadcast).
+
+        This allows the nonce to be reused by a subsequent transaction.
+
+        Args:
+            address: Wallet address
+            nonce: Nonce to release
+        """
+        address = address.lower()
+
+        with self._lock:
+            if address in self._in_flight:
+                self._in_flight[address].discard(nonce)
+
+            # If this was the highest pending nonce, we can reuse it
+            current_pending = self._pending_nonces.get(address, 0)
+            if nonce == current_pending - 1:
+                self._pending_nonces[address] = nonce
+                logger.debug(f"NonceManager: released nonce {nonce} for {address[:10]}...")
+
+    def reset(self, address: Optional[str] = None) -> None:
+        """
+        Reset nonce tracking, forcing re-sync with chain.
+
+        Args:
+            address: Address to reset. If None, resets all addresses.
+        """
+        with self._lock:
+            if address:
+                address = address.lower()
+                self._pending_nonces.pop(address, None)
+                self._in_flight.pop(address, None)
+            else:
+                self._pending_nonces.clear()
+                self._in_flight.clear()
+
+
+# Global nonce manager instance (shared across all EVMSigner instances)
+_nonce_manager = NonceManager()
+
+
+def get_nonce_manager() -> NonceManager:
+    """Get the global nonce manager instance."""
+    return _nonce_manager
 
 
 class EVMSigner:
@@ -112,7 +240,7 @@ class EVMSigner:
         timeout: int = 120,
     ) -> Dict[str, Any]:
         """
-        Sign and send transaction
+        Sign and send transaction with thread-safe nonce management.
 
         Args:
             web3: Web3 instance connected to RPC
@@ -123,10 +251,18 @@ class EVMSigner:
         Returns:
             Dict with status, tx_hash, and optionally receipt
         """
+        nonce = None
+        nonce_from_manager = False
+
         try:
             # Ensure required fields
             if "nonce" not in tx_dict:
-                tx_dict["nonce"] = web3.eth.get_transaction_count(self.address)
+                # Use thread-safe nonce manager
+                nonce = _nonce_manager.get_nonce(web3, self.address)
+                tx_dict["nonce"] = nonce
+                nonce_from_manager = True
+            else:
+                nonce = tx_dict["nonce"]
 
             if "chainId" not in tx_dict:
                 tx_dict["chainId"] = web3.eth.chain_id
@@ -139,6 +275,11 @@ class EVMSigner:
 
             if wait_for_receipt:
                 receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+
+                # Confirm nonce was used successfully
+                if nonce_from_manager:
+                    _nonce_manager.confirm_nonce(self.address, nonce)
+
                 return {
                     "status": "success" if receipt["status"] == 1 else "failed",
                     "tx_hash": tx_hash.hex(),
@@ -148,12 +289,30 @@ class EVMSigner:
                     "receipt": dict(receipt),
                 }
 
+            # For pending transactions, nonce is considered used
+            if nonce_from_manager:
+                _nonce_manager.confirm_nonce(self.address, nonce)
+
             return {
                 "status": "pending",
                 "tx_hash": tx_hash.hex(),
             }
 
         except Exception as e:
+            # Release nonce if transaction failed before being sent
+            # Note: If tx was sent but failed on-chain, nonce is still consumed
+            error_str = str(e).lower()
+            is_pre_send_error = any(keyword in error_str for keyword in [
+                "nonce too low",  # Already used
+                "replacement transaction",  # Replacing existing
+                "insufficient funds",  # Can't pay gas
+                "gas too low",  # Invalid gas
+                "invalid sender",  # Bad signature
+            ])
+
+            if nonce_from_manager and is_pre_send_error:
+                _nonce_manager.release_nonce(self.address, nonce)
+
             logger.error(f"Transaction failed: {e}")
             return {
                 "status": "failed",
@@ -265,7 +424,10 @@ def create_web3(
     if chain_id is None:
         try:
             chain_id = web3.eth.chain_id
-        except Exception:
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                f"Failed to detect chain ID from RPC, defaulting to 1 (ETH): {e}"
+            )
             chain_id = 1  # Default to ETH
 
     # Add PoA middleware for BSC and other PoA chains

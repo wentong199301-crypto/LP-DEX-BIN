@@ -4,6 +4,7 @@ Uniswap V3/V4 Liquidity Module Integration Tests
 WARNING: These tests execute REAL LP operations and spend REAL tokens!
 
 Tests Uniswap V3/V4 LP operations with live Ethereum RPC.
+All operations have automatic retry logic for transient failures.
 
 Environment Variables Required:
     EVM_PRIVATE_KEY         - EVM private key
@@ -27,9 +28,10 @@ except ImportError:
     pass
 
 
-# Known Uniswap V3 WETH/USDC pool address on Ethereum for testing
-# 0.3% fee tier pool (most liquid)
-UNISWAP_WETH_USDC_POOL = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
+from dex_adapter_universal.types.pool import UNISWAP_POOLS
+
+# Use pool from registry
+UNISWAP_WETH_USDC_POOL = UNISWAP_POOLS["USDC/WETH"]
 
 # Minimum balances required for LP tests
 MIN_ETH_BALANCE = Decimal("0.02")
@@ -54,6 +56,41 @@ def create_adapter():
 
     signer = EVMSigner.from_env()
     return UniswapAdapter(chain_id=1, signer=signer)
+
+
+# Import balance helpers from conftest
+from conftest import get_native_balance
+
+
+def test_retry_config_uniswap(adapter):
+    """Test that retry configuration is properly set for Uniswap operations"""
+    print("Testing retry config (Uniswap)...")
+
+    from dex_adapter_universal.config import config
+
+    # Verify retry config values
+    assert config.tx.max_retries >= 1, "max_retries should be at least 1"
+    assert config.tx.retry_delay > 0, "retry_delay should be positive"
+
+    print(f"  max_retries: {config.tx.max_retries}")
+    print(f"  retry_delay: {config.tx.retry_delay}s")
+
+    # Verify LP slippage config
+    assert config.trading.default_lp_slippage_bps >= 0, "LP slippage should be non-negative"
+    print(f"  default_lp_slippage_bps: {config.trading.default_lp_slippage_bps}")
+
+    # Verify adapter has retry helper methods
+    assert hasattr(adapter, '_execute_with_retry'), "adapter should have _execute_with_retry method"
+    assert hasattr(adapter, '_is_recoverable_error'), "adapter should have _is_recoverable_error method"
+    assert hasattr(adapter, '_is_slippage_error'), "adapter should have _is_slippage_error method"
+
+    # Test error classification methods
+    assert adapter._is_recoverable_error("connection timeout"), "timeout should be recoverable"
+    assert adapter._is_recoverable_error("replacement transaction underpriced"), "underpriced should be recoverable"
+    assert adapter._is_slippage_error("slippage exceeded"), "slippage should be identified"
+    assert adapter._is_slippage_error("too little received"), "too little received should be slippage"
+
+    print("  retry config (Uniswap): PASSED")
 
 
 def test_list_positions_uniswap(adapter):
@@ -107,7 +144,7 @@ def test_open_position_uniswap(adapter):
     print("Testing open position (Uniswap V3) (REAL TRANSACTION)...")
 
     # Check balances
-    eth_balance = adapter.get_native_balance()
+    eth_balance = get_native_balance(adapter)
     print(f"  ETH balance: {eth_balance}")
 
     if eth_balance < MIN_ETH_BALANCE:
@@ -132,7 +169,6 @@ def test_open_position_uniswap(adapter):
         pool=pool,
         price_range=PriceRange.percent(0.05),
         amount0=Decimal("0.005"),
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -157,14 +193,13 @@ def test_add_liquidity_uniswap(adapter):
     print(f"  Range: {position.price_lower:.6f} - {position.price_upper:.6f}")
 
     # Check balances
-    eth_balance = adapter.get_native_balance()
+    eth_balance = get_native_balance(adapter)
     print(f"  ETH balance: {eth_balance}")
 
     result = adapter.add_liquidity(
         position=position,
         amount0=Decimal("0.002"),  # 0.002 WETH
         amount1=Decimal("5"),       # 5 USDC
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -189,7 +224,6 @@ def test_remove_liquidity_partial_uniswap(adapter):
     result = adapter.remove_liquidity(
         position=position,
         percent=25.0,
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -230,8 +264,8 @@ def test_claim_fees_uniswap(adapter):
 
 
 def test_close_position_uniswap(adapter):
-    """Test closing a Uniswap LP position with real transaction"""
-    print("Testing close position (Uniswap V3) (REAL TRANSACTION)...")
+    """Test closing a single Uniswap LP position with real transaction"""
+    print("Testing close single position (Uniswap V3) (REAL TRANSACTION)...")
 
     # Get existing positions
     positions = adapter.get_positions(version="v3")
@@ -246,7 +280,35 @@ def test_close_position_uniswap(adapter):
     print(f"  TX Hash: {result.signature}")
 
     assert result.is_success, f"Close position failed: {result.error}"
-    print("  close position (Uniswap V3): PASSED")
+    print("  close single position (Uniswap V3): PASSED")
+
+
+def test_close_all_positions_uniswap(adapter):
+    """Test closing all Uniswap LP positions with real transaction"""
+    print("Testing close ALL positions (Uniswap) (REAL TRANSACTION)...")
+
+    # Check how many positions exist
+    positions = adapter.get_positions()
+    print(f"  Found {len(positions)} Uniswap positions to close")
+
+    if not positions:
+        print("  No positions to close (this is OK)")
+        print("  close ALL positions (Uniswap): PASSED")
+        return
+
+    # Close all Uniswap positions
+    results = adapter.close_position()
+
+    print(f"  Closed {len(results)} position(s):")
+    for i, result in enumerate(results):
+        status = "OK" if result.is_success else "FAILED"
+        print(f"    [{i+1}] {status}: {result.signature}")
+
+    # Check all succeeded
+    failed = [r for r in results if not r.is_success]
+    assert len(failed) == 0, f"{len(failed)} position(s) failed to close"
+
+    print("  close ALL positions (Uniswap): PASSED")
 
 
 def test_full_lifecycle_uniswap(adapter):
@@ -254,7 +316,7 @@ def test_full_lifecycle_uniswap(adapter):
     print("Testing full lifecycle (Uniswap V3) (REAL TRANSACTIONS)...")
 
     # Check balances
-    eth_balance = adapter.get_native_balance()
+    eth_balance = get_native_balance(adapter)
     print(f"  ETH balance: {eth_balance}")
 
     if eth_balance < MIN_ETH_BALANCE:
@@ -278,7 +340,6 @@ def test_full_lifecycle_uniswap(adapter):
         pool=pool,
         price_range=PriceRange.percent(0.05),
         amount0=Decimal("0.005"),
-        slippage_bps=100,
     )
 
     assert open_result.is_success, f"Open failed: {open_result.error}"
@@ -301,7 +362,6 @@ def test_full_lifecycle_uniswap(adapter):
         position=position,
         amount0=Decimal("0.002"),
         amount1=Decimal("5"),
-        slippage_bps=100,
     )
     print(f"    Add status: {add_result.status}")
 
@@ -314,7 +374,6 @@ def test_full_lifecycle_uniswap(adapter):
     remove_result = adapter.remove_liquidity(
         position=position,
         percent=25.0,
-        slippage_bps=100,
     )
     print(f"    Remove status: {remove_result.status}")
 
@@ -326,15 +385,16 @@ def test_full_lifecycle_uniswap(adapter):
     claim_result = adapter.claim_fees(position)
     print(f"    Claim status: {claim_result.status}")
 
-    # Step 6: Close position
-    print(f"  Step 6: Closing position...")
-    positions = adapter.get_positions(version="v3")
-    position = positions[0]
+    # Step 6: Close ALL positions
+    print(f"  Step 6: Closing ALL Uniswap positions...")
+    close_results = adapter.close_position()
 
-    close_result = adapter.close_position(position)
-
-    print(f"    Closed: {close_result.signature}")
-    assert close_result.is_success, f"Close failed: {close_result.error}"
+    if isinstance(close_results, list):
+        print(f"    Closed {len(close_results)} position(s)")
+        for result in close_results:
+            assert result.is_success, f"Close failed: {result.error}"
+    else:
+        assert close_results.is_success, f"Close failed: {close_results.error}"
 
     print("  full lifecycle (Uniswap V3): PASSED")
 
@@ -363,6 +423,7 @@ def main():
     print()
 
     tests = [
+        test_retry_config_uniswap,
         test_list_positions_uniswap,
         test_get_pool_uniswap,
         test_open_position_uniswap,
@@ -370,6 +431,7 @@ def main():
         test_remove_liquidity_partial_uniswap,
         test_claim_fees_uniswap,
         test_close_position_uniswap,
+        test_close_all_positions_uniswap,
         test_full_lifecycle_uniswap,
     ]
 

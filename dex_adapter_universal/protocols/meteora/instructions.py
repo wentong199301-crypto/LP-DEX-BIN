@@ -25,8 +25,9 @@ from .constants import (
 from .math import get_bin_array_index
 
 
-# Wrapped SOL mint address
-WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
+# Wrapped SOL mint - use centralized registry
+from dex_adapter_universal.types.solana_tokens import SOLANA_TOKEN_MINTS
+WRAPPED_SOL_MINT = SOLANA_TOKEN_MINTS["SOL"]
 
 
 def detect_token_program_for_mint(rpc, mint) -> "Pubkey":
@@ -96,16 +97,15 @@ def build_initialize_position_instructions(
     owner: str,
     lower_bin_id: int,
     width: int,
-    use_v2: bool = False,
 ) -> Tuple[List["Instruction"], "Keypair"]:
     """
-    Build instructions to initialize a new position
+    Build instructions to initialize a new DLMM position (V1, max 70 bins)
 
     Args:
         lb_pair: LbPair (pool) address
         owner: Owner wallet
         lower_bin_id: Lower bin ID
-        width: Number of bins
+        width: Number of bins (max 70)
 
     Returns:
         Tuple of (instructions, position_keypair)
@@ -130,8 +130,7 @@ def build_initialize_position_instructions(
     )
 
     # Build instruction data
-    discriminator = DISCRIMINATORS["initialize_position2"] if use_v2 else DISCRIMINATORS["initialize_position"]
-    data = bytearray(discriminator)
+    data = bytearray(DISCRIMINATORS["initialize_position"])
     data.extend(struct.pack("<i", lower_bin_id))
     data.extend(struct.pack("<i", width))
 
@@ -164,7 +163,6 @@ def build_add_liquidity_by_strategy_instructions(
     max_bin_id: int,
     max_active_bin_slippage: int = 3,
     strategy_type: int = StrategyType.SPOT_BALANCED,
-    use_v2: bool = False,
     rpc=None,
 ) -> List["Instruction"]:
     """
@@ -182,7 +180,7 @@ def build_add_liquidity_by_strategy_instructions(
         max_bin_id: Upper bin ID of position range
         max_active_bin_slippage: Max slippage in bins
         strategy_type: Strategy type (default: SPOT_BALANCED)
-        rpc: RPC client for token program detection (required for Token-2022 support)
+        rpc: RPC client for token program detection
 
     Returns:
         List of instructions
@@ -226,7 +224,7 @@ def build_add_liquidity_by_strategy_instructions(
         program_id,
     )
 
-    # Create token accounts if needed (with correct token program for Token-2022 support)
+    # Create token accounts if needed
     instructions.append(_build_create_ata_idempotent_instruction(owner_pubkey, owner_pubkey, mint_x, token_program_x))
     instructions.append(_build_create_ata_idempotent_instruction(owner_pubkey, owner_pubkey, mint_y, token_program_y))
 
@@ -247,8 +245,7 @@ def build_add_liquidity_by_strategy_instructions(
     #     max_bin_id: i32
     #     strategy_type: u8 (enum)
     #     parameteres: [u8; 64]
-    discriminator = DISCRIMINATORS["add_liquidity_by_strategy2"] if use_v2 else DISCRIMINATORS["add_liquidity_by_strategy"]
-    data = bytearray(discriminator)
+    data = bytearray(DISCRIMINATORS["add_liquidity_by_strategy"])
     data.extend(struct.pack("<Q", amount_x))  # amount_x: u64
     data.extend(struct.pack("<Q", amount_y))  # amount_y: u64
     data.extend(struct.pack("<i", active_id))  # active_id: i32
@@ -259,19 +256,15 @@ def build_add_liquidity_by_strategy_instructions(
     data.extend(struct.pack("<B", strategy_type))  # strategy_type: u8
     data.extend(bytes(64))  # parameteres: [u8; 64] (zeros for default)
 
-    # Accounts in correct order per IDL (16 accounts total):
-    # 1. position, 2. lb_pair, 3. bin_array_bitmap_extension (optional),
+    # Accounts (16 accounts with separate token programs for Token-2022 support):
+    # 1. position, 2. lb_pair, 3. bin_array_bitmap_extension,
     # 4. user_token_x, 5. user_token_y, 6. reserve_x, 7. reserve_y,
     # 8. token_x_mint, 9. token_y_mint, 10. bin_array_lower, 11. bin_array_upper,
     # 12. sender, 13. token_x_program, 14. token_y_program, 15. event_authority, 16. program
-    #
-    # For bin_array_bitmap_extension: Always pass the derived PDA.
-    # If it doesn't exist on-chain, the account will have 0 lamports/data
-    # and the program will handle it correctly.
     accounts = [
         AccountMeta(position_pubkey, is_signer=False, is_writable=True),       # 1. position
         AccountMeta(lb_pair_pubkey, is_signer=False, is_writable=True),        # 2. lb_pair
-        AccountMeta(bitmap_extension, is_signer=False, is_writable=True),      # 3. bin_array_bitmap_extension (must be mutable)
+        AccountMeta(bitmap_extension, is_signer=False, is_writable=True),      # 3. bin_array_bitmap_extension
         AccountMeta(user_token_x, is_signer=False, is_writable=True),          # 4. user_token_x
         AccountMeta(user_token_y, is_signer=False, is_writable=True),          # 5. user_token_y
         AccountMeta(vault_x, is_signer=False, is_writable=True),               # 6. reserve_x
@@ -307,6 +300,9 @@ def build_remove_liquidity_instructions(
     """
     Build instructions to remove liquidity
 
+    Uses V1 discriminator with 16 accounts (separate token programs).
+    This matches the format used by add_liquidity_by_strategy.
+
     Args:
         lb_pair: LbPair address
         pool_state: Parsed pool state
@@ -316,11 +312,14 @@ def build_remove_liquidity_instructions(
         bps_to_remove: Basis points to remove (10000 = 100%)
         amount_x_min: Min amount X to receive
         amount_y_min: Min amount Y to receive
-        rpc: RPC client for token program detection (required for Token-2022 support)
+        rpc: RPC client for token program detection
 
     Returns:
         List of instructions
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     from solders.pubkey import Pubkey
     from solders.instruction import Instruction, AccountMeta
 
@@ -342,8 +341,21 @@ def build_remove_liquidity_instructions(
         token_program_x = Pubkey.from_string(TOKEN_PROGRAM_ID)
         token_program_y = Pubkey.from_string(TOKEN_PROGRAM_ID)
 
+    logger.info(f"remove_liquidity: mint_x={mint_x}, token_program_x={token_program_x}")
+    logger.info(f"remove_liquidity: mint_y={mint_y}, token_program_y={token_program_y}")
+
     user_token_x = _get_associated_token_address(owner_pubkey, mint_x, token_program_x)
     user_token_y = _get_associated_token_address(owner_pubkey, mint_y, token_program_y)
+
+    logger.info(f"remove_liquidity: user_token_x={user_token_x}")
+    logger.info(f"remove_liquidity: user_token_y={user_token_y}")
+
+    # Build instructions list - start with ATA creation
+    instructions = []
+
+    # Create token accounts if needed (must exist to receive removed tokens)
+    instructions.append(_build_create_ata_idempotent_instruction(owner_pubkey, owner_pubkey, mint_x, token_program_x))
+    instructions.append(_build_create_ata_idempotent_instruction(owner_pubkey, owner_pubkey, mint_y, token_program_y))
 
     # Derive bin arrays for lower and upper bounds
     min_bin = min(bin_ids)
@@ -351,8 +363,13 @@ def build_remove_liquidity_instructions(
     bin_array_lower = _derive_bin_array_address(lb_pair_pubkey, min_bin)
     bin_array_upper = _derive_bin_array_address(lb_pair_pubkey, max_bin)
 
+    logger.info(f"remove_liquidity: bin_ids range={min_bin} to {max_bin} ({len(bin_ids)} bins)")
+    logger.info(f"remove_liquidity: bin_array_lower={bin_array_lower}")
+    logger.info(f"remove_liquidity: bin_array_upper={bin_array_upper}")
+
     # Derive bitmap extension PDA (optional but always passed)
     bitmap_extension = _derive_bitmap_extension_address(lb_pair_pubkey)
+    logger.info(f"remove_liquidity: bitmap_extension={bitmap_extension}")
 
     # Derive event authority
     event_authority, _ = Pubkey.find_program_address(
@@ -360,18 +377,18 @@ def build_remove_liquidity_instructions(
         program_id,
     )
 
-    # Build instruction data
-    # BinLiquidityReduction struct per bin: { bin_id: i32, bps_to_remove: u16 }
-    data = bytearray(DISCRIMINATORS["remove_liquidity"])
-    data.extend(struct.pack("<I", len(bin_ids)))  # Vec length (u32)
-    for bin_id in bin_ids:
-        data.extend(struct.pack("<i", bin_id))      # bin_id: i32
-        data.extend(struct.pack("<H", bps_to_remove))  # bps_to_remove: u16 (per bin)
-    data.extend(struct.pack("<Q", amount_x_min))   # amount_x_min: u64
-    data.extend(struct.pack("<Q", amount_y_min))   # amount_y_min: u64
+    # Build instruction data using remove_liquidity_by_range
+    # This is more efficient for contiguous bin ranges
+    # RemoveLiquidityByRangeParameter: { from_bin_id: i32, to_bin_id: i32, bps_to_remove: u16 }
+    data = bytearray(DISCRIMINATORS["remove_liquidity_by_range"])
+    data.extend(struct.pack("<i", min_bin))        # from_bin_id: i32
+    data.extend(struct.pack("<i", max_bin))        # to_bin_id: i32
+    data.extend(struct.pack("<H", bps_to_remove))  # bps_to_remove: u16
 
-    # Accounts per IDL (16 accounts):
-    # 1. position, 2. lb_pair, 3. bin_array_bitmap_extension (optional),
+    logger.info(f"remove_liquidity: using remove_liquidity_by_range from {min_bin} to {max_bin}, bps={bps_to_remove}")
+
+    # Accounts (16 accounts with separate token programs):
+    # 1. position, 2. lb_pair, 3. bin_array_bitmap_extension,
     # 4. user_token_x, 5. user_token_y, 6. reserve_x, 7. reserve_y,
     # 8. token_x_mint, 9. token_y_mint, 10. bin_array_lower, 11. bin_array_upper,
     # 12. sender, 13. token_x_program, 14. token_y_program, 15. event_authority, 16. program
@@ -395,7 +412,8 @@ def build_remove_liquidity_instructions(
     ]
 
     instruction = Instruction(program_id, bytes(data), accounts)
-    return [instruction]
+    instructions.append(instruction)
+    return instructions
 
 
 def build_close_position_instructions(
@@ -480,7 +498,7 @@ def build_claim_fee_instructions(
         rpc: RPC client for token program detection (required for Token-2022 support)
 
     Returns:
-        List of instructions
+        List of instructions (includes ATA creation + claim_fee)
     """
     from solders.pubkey import Pubkey
     from solders.instruction import Instruction, AccountMeta
@@ -518,6 +536,13 @@ def build_claim_fee_instructions(
         [EVENT_AUTHORITY_SEED],
         program_id,
     )
+
+    # Build instructions list - start with ATA creation
+    instructions = []
+
+    # Create token accounts if needed (must exist to receive claimed fees)
+    instructions.append(_build_create_ata_idempotent_instruction(owner_pubkey, owner_pubkey, mint_x, token_program_x))
+    instructions.append(_build_create_ata_idempotent_instruction(owner_pubkey, owner_pubkey, mint_y, token_program_y))
 
     # Determine if we need V2 instruction (when token programs differ)
     use_v2 = str(token_program_x) != str(token_program_y)
@@ -563,7 +588,8 @@ def build_claim_fee_instructions(
         ]
 
     instruction = Instruction(program_id, bytes(data), accounts)
-    return [instruction]
+    instructions.append(instruction)
+    return instructions
 
 
 def _get_associated_token_address(
@@ -704,6 +730,40 @@ def _build_wrap_sol_instructions(owner: str, amount_lamports: int) -> List["Inst
     instructions.append(Instruction(token_program, bytes([17]), sync_accounts))
 
     return instructions
+
+
+def build_unwrap_sol_instruction(owner: str) -> "Instruction":
+    """
+    Build instruction to unwrap WSOL back to native SOL.
+
+    This closes the WSOL ATA and returns all WSOL as native SOL to the owner.
+    SPL Token CloseAccount instruction (index 9).
+
+    Args:
+        owner: Owner wallet address
+
+    Returns:
+        CloseAccount instruction
+    """
+    from solders.pubkey import Pubkey
+    from solders.instruction import Instruction, AccountMeta
+
+    owner_pubkey = Pubkey.from_string(owner)
+    wsol_mint = Pubkey.from_string(WRAPPED_SOL_MINT)
+    token_program = Pubkey.from_string(TOKEN_PROGRAM_ID)
+
+    wsol_ata = _get_associated_token_address(owner_pubkey, wsol_mint)
+
+    # CloseAccount instruction: closes token account and returns lamports to destination
+    # Accounts: [account_to_close, destination, owner]
+    accounts = [
+        AccountMeta(wsol_ata, is_signer=False, is_writable=True),      # Account to close
+        AccountMeta(owner_pubkey, is_signer=False, is_writable=True),  # Destination for lamports
+        AccountMeta(owner_pubkey, is_signer=True, is_writable=False),  # Owner/authority
+    ]
+
+    # SPL Token CloseAccount = instruction index 9
+    return Instruction(token_program, bytes([9]), accounts)
 
 
 def build_initialize_bitmap_extension_instructions(

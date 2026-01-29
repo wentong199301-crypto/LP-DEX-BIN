@@ -62,7 +62,7 @@ class Position:
     lower_bin_id: Optional[int] = None
     upper_bin_id: Optional[int] = None
     position_address: Optional[str] = None
-    bin_ids: Optional[List[int]] = None  # List of bin IDs with liquidity
+    bin_ids: List[int] = field(default_factory=list)  # List of bin IDs with liquidity
 
     # Additional metadata
     metadata: dict = field(default_factory=dict)
@@ -139,3 +139,29 @@ class Position:
         """
         ratio = self.price_position_ratio(current_price)
         return min(ratio, 1 - ratio) if 0 <= ratio <= 1 else 0.0
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dictionary"""
+        return {
+            "id": self.id,
+            "pool": self.pool.to_dict() if hasattr(self.pool, 'to_dict') else str(self.pool),
+            "owner": self.owner,
+            "price_lower": str(self.price_lower),
+            "price_upper": str(self.price_upper),
+            "amount0": str(self.amount0),
+            "amount1": str(self.amount1),
+            "liquidity": self.liquidity,
+            "value_usd": str(self.value_usd),
+            "unclaimed_fees": {k: str(v) for k, v in self.unclaimed_fees.items()},
+            "unclaimed_rewards": {k: str(v) for k, v in self.unclaimed_rewards.items()},
+            "is_in_range": self.is_in_range,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "nft_mint": self.nft_mint,
+            "tick_lower": self.tick_lower,
+            "tick_upper": self.tick_upper,
+            "lower_bin_id": self.lower_bin_id,
+            "upper_bin_id": self.upper_bin_id,
+            "position_address": self.position_address,
+            "bin_ids": self.bin_ids,
+            "dex": self.dex,
+        }

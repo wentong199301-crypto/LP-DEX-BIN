@@ -67,11 +67,11 @@ class PriceRange:
     mode: RangeMode = RangeMode.PERCENT
 
     def __post_init__(self):
-        # Convert to Decimal if needed
+        # Convert to Decimal if needed (direct assignment - class is not frozen)
         if not isinstance(self.lower, Decimal):
-            object.__setattr__(self, 'lower', Decimal(str(self.lower)))
+            self.lower = Decimal(str(self.lower))
         if not isinstance(self.upper, Decimal):
-            object.__setattr__(self, 'upper', Decimal(str(self.upper)))
+            self.upper = Decimal(str(self.upper))
 
     @classmethod
     def one_tick(cls) -> "PriceRange":

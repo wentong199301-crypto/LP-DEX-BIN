@@ -50,6 +50,7 @@ ETH_TOKEN_ADDRESSES: Dict[str, str] = {
     "DAI": "0x6B175474E89094C44Da98b954EedeaC495271d0F",
     "FRAX": "0x853d955aCEf822Db058eb8505911ED77F175b99e",
     "LUSD": "0x5f98805A4E8be255a32880FDeC7F6728C6568bA0",
+    "USD1": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
 
     # Major tokens
     "WBTC": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
@@ -85,6 +86,7 @@ ETH_TOKEN_DECIMALS: Dict[str, int] = {
     "DAI": 18,
     "FRAX": 18,
     "LUSD": 18,
+    "USD1": 18,
     "WBTC": 8,
     "LINK": 18,
     "UNI": 18,
@@ -121,6 +123,7 @@ BSC_TOKEN_ADDRESSES: Dict[str, str] = {
     "DAI": "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3",
     "FRAX": "0x90C97F71E18723b0Cf0dfa30ee176Ab653E89F40",
     "TUSD": "0x14016E85a25aeb13065688cAFB43044C2ef86784",
+    "USD1": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
 
     # Bridged assets
     "ETH": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
@@ -158,6 +161,7 @@ BSC_TOKEN_DECIMALS: Dict[str, int] = {
     "DAI": 18,
     "FRAX": 18,
     "TUSD": 18,
+    "USD1": 18,
     "ETH": 18,
     "BTCB": 18,
     "CAKE": 18,
@@ -272,9 +276,16 @@ def resolve_token_address(token: str, chain_id: int) -> str:
     Raises:
         ValueError: If token symbol is unknown and not an address
     """
-    # If already an address (starts with 0x and is 42 chars), return as-is
+    # Strip whitespace to avoid subtle failures
+    token = token.strip()
+
+    # If already an address (starts with 0x, is 42 chars, and valid hex), return as-is
     if token.startswith("0x") and len(token) == 42:
-        return token
+        try:
+            int(token[2:], 16)  # Validate hex characters
+            return token
+        except ValueError:
+            pass  # Not valid hex, try symbol lookup
 
     # Look up symbol
     address = get_token_address(token, chain_id)

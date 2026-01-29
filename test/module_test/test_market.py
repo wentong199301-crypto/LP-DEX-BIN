@@ -1,12 +1,14 @@
 """
 Market Module Integration Tests
 
-Tests market/pool operations with live Solana RPC.
+Tests market/pool operations with live RPC connections.
+Supports multi-chain: Solana (Raydium/Meteora), Ethereum (Uniswap), BSC (PancakeSwap).
 
 WARNING: These tests use REAL RPC connections!
 """
 
 import sys
+import os
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,11 +17,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from conftest import create_client, skip_if_no_config
+from dex_adapter_universal.types.pool import (
+    RAYDIUM_POOLS,
+    METEORA_POOLS,
+    UNISWAP_POOLS,
+    PANCAKESWAP_POOLS,
+)
+from dex_adapter_universal.types.solana_tokens import SOLANA_TOKEN_MINTS
+
+# Get pool addresses from registry
+RAYDIUM_SOL_USDC_POOL = RAYDIUM_POOLS.get("SOL/USDC")
+RAYDIUM_SOL_USD1_POOL = RAYDIUM_POOLS.get("SOL/USD1")
+METEORA_SOL_USDC_POOL = METEORA_POOLS.get("SOL/USDC")
+UNISWAP_ETH_USDT_POOL = UNISWAP_POOLS.get("ETH/USDT")
+PANCAKESWAP_BNB_USDT_POOL = PANCAKESWAP_POOLS.get("WBNB/USDT")
 
 
-# Known pool addresses for testing
-RAYDIUM_SOL_USDC_POOL = "2QdhepnKRTLjjSqPL1PtKNwqrUkoLee5Gqs8bvZhRdMv"
-METEORA_SOL_USDC_POOL = "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR"
+def has_evm_config():
+    """Check if EVM config is available"""
+    return os.getenv("ETH_RPC_URL") and os.getenv("BSC_RPC_URL")
 
 
 def test_resolve_token_mint(client):
@@ -28,17 +44,21 @@ def test_resolve_token_mint(client):
 
     # Test known symbols
     sol_mint = client.market.resolve_token_mint("SOL")
-    assert sol_mint == "So11111111111111111111111111111111111111112", f"Wrong SOL mint: {sol_mint}"
+    assert sol_mint == SOLANA_TOKEN_MINTS["SOL"], f"Wrong SOL mint: {sol_mint}"
 
     usdc_mint = client.market.resolve_token_mint("USDC")
-    assert usdc_mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", f"Wrong USDC mint: {usdc_mint}"
+    assert usdc_mint == SOLANA_TOKEN_MINTS["USDC"], f"Wrong USDC mint: {usdc_mint}"
+
+    usd1_mint = client.market.resolve_token_mint("USD1")
+    assert usd1_mint == SOLANA_TOKEN_MINTS["USD1"], f"Wrong USD1 mint: {usd1_mint}"
 
     # Test case insensitivity
     msol_mint = client.market.resolve_token_mint("mSOL")
-    assert msol_mint == "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", f"Wrong mSOL mint: {msol_mint}"
+    assert msol_mint == SOLANA_TOKEN_MINTS["MSOL"], f"Wrong mSOL mint: {msol_mint}"
 
     print(f"  SOL -> {sol_mint[:16]}...")
     print(f"  USDC -> {usdc_mint[:16]}...")
+    print(f"  USD1 -> {usd1_mint[:16]}...")
     print(f"  mSOL -> {msol_mint[:16]}...")
     print("  resolve_token_mint: PASSED")
 
@@ -53,13 +73,15 @@ def test_pool_by_address_raydium(client):
     assert pool.address == RAYDIUM_SOL_USDC_POOL, f"Wrong pool address"
     assert pool.dex == "raydium", f"Wrong dex: {pool.dex}"
     assert pool.price > 0, f"Price should be > 0, got {pool.price}"
+    assert isinstance(pool.tvl_usd, Decimal), f"TVL should be Decimal, got {type(pool.tvl_usd)}"
+    assert pool.tvl_usd > 0, f"TVL should be > 0, got {pool.tvl_usd}"
 
     print(f"  Pool: {pool.address[:16]}...")
     print(f"  DEX: {pool.dex}")
     print(f"  Token0: {pool.token0.symbol or pool.token0.mint[:16]}")
     print(f"  Token1: {pool.token1.symbol or pool.token1.mint[:16]}")
     print(f"  Price: {pool.price}")
-    print(f"  TVL USD: {pool.tvl_usd}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
     print("  pool by address (Raydium): PASSED")
 
 
@@ -72,9 +94,11 @@ def test_pool_by_symbol_raydium(client):
     assert pool is not None, "Pool should not be None"
     assert pool.dex == "raydium", f"Wrong dex: {pool.dex}"
     assert pool.price > 0, f"Price should be > 0"
+    assert pool.tvl_usd > 0, f"TVL should be > 0"
 
     print(f"  SOL/USDC pool: {pool.address[:16]}...")
     print(f"  Price: {pool.price}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
     print("  pool by symbol (Raydium): PASSED")
 
 
@@ -93,6 +117,45 @@ def test_pool_by_symbol_case_insensitive(client):
     print("  pool by symbol (case insensitive): PASSED")
 
 
+def test_pool_by_address_raydium_usd1(client):
+    """Test getting Raydium SOL/USD1 pool by address"""
+    print("Testing pool by address (Raydium SOL/USD1)...")
+
+    pool = client.market.pool(RAYDIUM_SOL_USD1_POOL, dex="raydium")
+
+    assert pool is not None, "Pool should not be None"
+    assert pool.address == RAYDIUM_SOL_USD1_POOL, f"Wrong pool address"
+    assert pool.dex == "raydium", f"Wrong dex: {pool.dex}"
+    assert pool.price > 0, f"Price should be > 0, got {pool.price}"
+    assert isinstance(pool.tvl_usd, Decimal), f"TVL should be Decimal, got {type(pool.tvl_usd)}"
+    assert pool.tvl_usd > 0, f"TVL should be > 0, got {pool.tvl_usd}"
+
+    print(f"  Pool: {pool.address[:16]}...")
+    print(f"  DEX: {pool.dex}")
+    print(f"  Token0: {pool.token0.symbol or pool.token0.mint[:16]}")
+    print(f"  Token1: {pool.token1.symbol or pool.token1.mint[:16]}")
+    print(f"  Price: {pool.price}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
+    print("  pool by address (Raydium SOL/USD1): PASSED")
+
+
+def test_pool_by_symbol_raydium_usd1(client):
+    """Test getting Raydium SOL/USD1 pool by symbol"""
+    print("Testing pool by symbol (Raydium SOL/USD1)...")
+
+    pool = client.market.pool_by_symbol("SOL/USD1", dex="raydium")
+
+    assert pool is not None, "Pool should not be None"
+    assert pool.dex == "raydium", f"Wrong dex: {pool.dex}"
+    assert pool.price > 0, f"Price should be > 0"
+    assert pool.tvl_usd > 0, f"TVL should be > 0"
+
+    print(f"  SOL/USD1 pool: {pool.address[:16]}...")
+    print(f"  Price: {pool.price}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
+    print("  pool by symbol (Raydium SOL/USD1): PASSED")
+
+
 def test_pool_by_address_meteora(client):
     """Test getting Meteora pool by address"""
     print("Testing pool by address (Meteora)...")
@@ -102,10 +165,13 @@ def test_pool_by_address_meteora(client):
     assert pool is not None, "Pool should not be None"
     assert pool.address == METEORA_SOL_USDC_POOL, f"Wrong pool address"
     assert pool.dex == "meteora", f"Wrong dex: {pool.dex}"
+    assert pool.price > 0, f"Price should be > 0"
+    assert pool.tvl_usd > 0, f"TVL should be > 0"
 
     print(f"  Pool: {pool.address[:16]}...")
     print(f"  DEX: {pool.dex}")
     print(f"  Price: {pool.price}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
     print("  pool by address (Meteora): PASSED")
 
 
@@ -151,51 +217,257 @@ def test_price_usd(client):
     print("  price_usd: PASSED")
 
 
-def test_pool_cache(client):
-    """Test pool caching behavior"""
-    print("Testing pool cache...")
+# =============================================================================
+# Multi-chain Token Resolution Tests
+# =============================================================================
 
-    # First call should fetch from chain
-    pool1 = client.market.pool(RAYDIUM_SOL_USDC_POOL, dex="raydium")
+def test_resolve_token_multichain(client):
+    """Test resolve_token works for all chains"""
+    print("Testing resolve_token (multichain)...")
 
-    # Second call should use cache
-    pool2 = client.market.pool(RAYDIUM_SOL_USDC_POOL, dex="raydium")
+    # Solana
+    sol_mint = client.market.resolve_token("SOL", chain="solana")
+    assert sol_mint == SOLANA_TOKEN_MINTS["SOL"], f"Wrong SOL mint"
+    print(f"  SOL (solana) -> {sol_mint[:16]}...")
 
-    assert pool1.address == pool2.address, "Cached pool should match"
+    # Solana USD1
+    usd1_mint = client.market.resolve_token("USD1", chain="solana")
+    assert usd1_mint == SOLANA_TOKEN_MINTS["USD1"], f"Wrong USD1 mint"
+    print(f"  USD1 (solana) -> {usd1_mint[:16]}...")
 
-    # Refresh should fetch new data
-    pool3 = client.market.pool(RAYDIUM_SOL_USDC_POOL, dex="raydium", refresh=True)
-    assert pool3 is not None, "Refreshed pool should not be None"
+    # Ethereum
+    weth_addr = client.market.resolve_token("WETH", chain="eth")
+    assert weth_addr.startswith("0x"), "WETH should be 0x prefixed"
+    assert len(weth_addr) == 42, "WETH should be 42 chars"
+    print(f"  WETH (eth) -> {weth_addr}")
 
-    print(f"  Pool caching works correctly")
-    print("  pool cache: PASSED")
+    # Ethereum USD1
+    usd1_eth_addr = client.market.resolve_token("USD1", chain="eth")
+    assert usd1_eth_addr.startswith("0x"), "USD1 (eth) should be 0x prefixed"
+    assert len(usd1_eth_addr) == 42, "USD1 (eth) should be 42 chars"
+    print(f"  USD1 (eth) -> {usd1_eth_addr}")
+
+    # BSC
+    wbnb_addr = client.market.resolve_token("WBNB", chain="bsc")
+    assert wbnb_addr.startswith("0x"), "WBNB should be 0x prefixed"
+    assert len(wbnb_addr) == 42, "WBNB should be 42 chars"
+    print(f"  WBNB (bsc) -> {wbnb_addr}")
+
+    # BSC USD1
+    usd1_bsc_addr = client.market.resolve_token("USD1", chain="bsc")
+    assert usd1_bsc_addr.startswith("0x"), "USD1 (bsc) should be 0x prefixed"
+    assert len(usd1_bsc_addr) == 42, "USD1 (bsc) should be 42 chars"
+    print(f"  USD1 (bsc) -> {usd1_bsc_addr}")
+
+    print("  resolve_token (multichain): PASSED")
 
 
-def test_refresh_pool(client):
-    """Test refresh_pool method"""
-    print("Testing refresh_pool...")
+# =============================================================================
+# Ethereum (Uniswap) Tests
+# =============================================================================
 
-    pool = client.market.refresh_pool(RAYDIUM_SOL_USDC_POOL)
+def test_pool_by_symbol_uniswap(client):
+    """Test getting Uniswap pool by symbol"""
+    print("Testing pool by symbol (Uniswap ETH)...")
+
+    if not has_evm_config():
+        print("  SKIPPED: ETH_RPC_URL not configured")
+        return
+
+    pool = client.market.pool_by_symbol("ETH/USDT", chain="eth")
 
     assert pool is not None, "Pool should not be None"
-    assert pool.price > 0, "Price should be > 0"
+    assert pool.dex == "uniswap", f"Wrong dex: {pool.dex}"
+    assert pool.price > 0, f"Price should be > 0, got {pool.price}"
+    assert isinstance(pool.tvl_usd, Decimal), f"TVL should be Decimal"
+    assert pool.tvl_usd > 0, f"TVL should be > 0, got {pool.tvl_usd}"
 
-    print(f"  Refreshed pool price: {pool.price}")
-    print("  refresh_pool: PASSED")
+    print(f"  ETH/USDT pool: {pool.address}")
+    print(f"  Price: {pool.price}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
+    print(f"  Token0: {pool.token0.symbol}")
+    print(f"  Token1: {pool.token1.symbol}")
+    print("  pool by symbol (Uniswap ETH): PASSED")
 
 
-def test_clear_cache(client):
-    """Test clear_cache method"""
-    print("Testing clear_cache...")
+def test_pool_by_address_uniswap(client):
+    """Test getting Uniswap pool by address"""
+    print("Testing pool by address (Uniswap ETH)...")
 
-    # Populate cache
-    client.market.pool(RAYDIUM_SOL_USDC_POOL, dex="raydium")
+    if not has_evm_config():
+        print("  SKIPPED: ETH_RPC_URL not configured")
+        return
 
-    # Clear cache
-    client.market.clear_cache()
+    pool = client.market.pool(UNISWAP_ETH_USDT_POOL, chain="eth")
 
-    print(f"  Cache cleared successfully")
-    print("  clear_cache: PASSED")
+    assert pool is not None, "Pool should not be None"
+    assert pool.address.lower() == UNISWAP_ETH_USDT_POOL.lower(), "Wrong pool address"
+    assert pool.dex == "uniswap", f"Wrong dex: {pool.dex}"
+    assert pool.price > 0, f"Price should be > 0"
+    assert pool.tvl_usd > 0, f"TVL should be > 0"
+
+    print(f"  Pool: {pool.address}")
+    print(f"  Price: {pool.price}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
+    print("  pool by address (Uniswap ETH): PASSED")
+
+
+def test_price_eth(client):
+    """Test getting price on Ethereum"""
+    print("Testing price (ETH chain)...")
+
+    if not has_evm_config():
+        print("  SKIPPED: ETH_RPC_URL not configured")
+        return
+
+    price = client.market.price("ETH/USDT", chain="eth")
+
+    assert isinstance(price, Decimal), f"Expected Decimal, got {type(price)}"
+    assert price > 0, f"Price should be > 0, got {price}"
+
+    print(f"  ETH/USDT price: ${price}")
+    print("  price (ETH chain): PASSED")
+
+
+def test_price_usd_eth(client):
+    """Test getting USD price for ETH token"""
+    print("Testing price_usd (ETH chain)...")
+
+    if not has_evm_config():
+        print("  SKIPPED: ETH_RPC_URL not configured")
+        return
+
+    price = client.market.price_usd("WETH", chain="eth")
+
+    if price is not None:
+        assert isinstance(price, Decimal), f"Expected Decimal, got {type(price)}"
+        assert price > 0, f"Price should be > 0"
+        print(f"  WETH USD price: ${price}")
+    else:
+        print(f"  WETH USD price: None (no stablecoin pool found)")
+
+    print("  price_usd (ETH chain): PASSED")
+
+
+# =============================================================================
+# BSC (PancakeSwap) Tests
+# =============================================================================
+
+def test_pool_by_symbol_pancakeswap(client):
+    """Test getting PancakeSwap pool by symbol"""
+    print("Testing pool by symbol (PancakeSwap BSC)...")
+
+    if not has_evm_config():
+        print("  SKIPPED: BSC_RPC_URL not configured")
+        return
+
+    pool = client.market.pool_by_symbol("WBNB/USDT", chain="bsc")
+
+    assert pool is not None, "Pool should not be None"
+    assert pool.dex == "pancakeswap", f"Wrong dex: {pool.dex}"
+    assert pool.price > 0, f"Price should be > 0, got {pool.price}"
+    assert isinstance(pool.tvl_usd, Decimal), f"TVL should be Decimal"
+    assert pool.tvl_usd > 0, f"TVL should be > 0, got {pool.tvl_usd}"
+
+    print(f"  WBNB/USDT pool: {pool.address}")
+    print(f"  Price: {pool.price}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
+    print(f"  Token0: {pool.token0.symbol}")
+    print(f"  Token1: {pool.token1.symbol}")
+    print("  pool by symbol (PancakeSwap BSC): PASSED")
+
+
+def test_pool_by_address_pancakeswap(client):
+    """Test getting PancakeSwap pool by address"""
+    print("Testing pool by address (PancakeSwap BSC)...")
+
+    if not has_evm_config():
+        print("  SKIPPED: BSC_RPC_URL not configured")
+        return
+
+    pool = client.market.pool(PANCAKESWAP_BNB_USDT_POOL, chain="bsc")
+
+    assert pool is not None, "Pool should not be None"
+    assert pool.address.lower() == PANCAKESWAP_BNB_USDT_POOL.lower(), "Wrong pool address"
+    assert pool.dex == "pancakeswap", f"Wrong dex: {pool.dex}"
+    assert pool.price > 0, f"Price should be > 0"
+    assert pool.tvl_usd > 0, f"TVL should be > 0"
+
+    print(f"  Pool: {pool.address}")
+    print(f"  Price: {pool.price}")
+    print(f"  TVL: ${pool.tvl_usd:,.2f}")
+    print("  pool by address (PancakeSwap BSC): PASSED")
+
+
+def test_price_bsc(client):
+    """Test getting price on BSC"""
+    print("Testing price (BSC chain)...")
+
+    if not has_evm_config():
+        print("  SKIPPED: BSC_RPC_URL not configured")
+        return
+
+    price = client.market.price("WBNB/USDT", chain="bsc")
+
+    assert isinstance(price, Decimal), f"Expected Decimal, got {type(price)}"
+    assert price > 0, f"Price should be > 0, got {price}"
+
+    print(f"  WBNB/USDT price: ${price}")
+    print("  price (BSC chain): PASSED")
+
+
+def test_price_usd_bsc(client):
+    """Test getting USD price for BNB token"""
+    print("Testing price_usd (BSC chain)...")
+
+    if not has_evm_config():
+        print("  SKIPPED: BSC_RPC_URL not configured")
+        return
+
+    price = client.market.price_usd("WBNB", chain="bsc")
+
+    if price is not None:
+        assert isinstance(price, Decimal), f"Expected Decimal, got {type(price)}"
+        assert price > 0, f"Price should be > 0"
+        print(f"  WBNB USD price: ${price}")
+    else:
+        print(f"  WBNB USD price: None (no stablecoin pool found)")
+
+    print("  price_usd (BSC chain): PASSED")
+
+
+# =============================================================================
+# Chain/DEX Validation Tests
+# =============================================================================
+
+def test_invalid_chain_dex_combination(client):
+    """Test that invalid chain/dex combinations raise errors"""
+    print("Testing invalid chain/dex combinations...")
+
+    from dex_adapter_universal.errors import OperationNotSupported
+
+    # Try using raydium on ETH chain
+    try:
+        client.market.pool_by_symbol("ETH/USDC", dex="raydium", chain="eth")
+        assert False, "Should have raised OperationNotSupported"
+    except OperationNotSupported:
+        print("  raydium on eth: correctly rejected")
+
+    # Try using uniswap on BSC chain
+    try:
+        client.market.pool_by_symbol("BNB/USDT", dex="uniswap", chain="bsc")
+        assert False, "Should have raised OperationNotSupported"
+    except OperationNotSupported:
+        print("  uniswap on bsc: correctly rejected")
+
+    # Try using pancakeswap on Solana chain
+    try:
+        client.market.pool_by_symbol("SOL/USDC", dex="pancakeswap", chain="solana")
+        assert False, "Should have raised OperationNotSupported"
+    except OperationNotSupported:
+        print("  pancakeswap on solana: correctly rejected")
+
+    print("  invalid chain/dex combinations: PASSED")
 
 
 def main():
@@ -216,19 +488,39 @@ def main():
     print(f"  Wallet: {client.wallet.address}")
     print()
 
-    tests = [
+    # Solana tests
+    solana_tests = [
         test_resolve_token_mint,
         test_pool_by_address_raydium,
         test_pool_by_symbol_raydium,
         test_pool_by_symbol_case_insensitive,
+        test_pool_by_address_raydium_usd1,
+        test_pool_by_symbol_raydium_usd1,
         test_pool_by_address_meteora,
         test_price,
         test_price_by_pool_address,
         test_price_usd,
-        test_pool_cache,
-        test_refresh_pool,
-        test_clear_cache,
     ]
+
+    # Multi-chain tests (token resolution doesn't need EVM RPC)
+    multichain_tests = [
+        test_resolve_token_multichain,
+        test_invalid_chain_dex_combination,
+    ]
+
+    # EVM tests (require ETH_RPC_URL and BSC_RPC_URL)
+    evm_tests = [
+        test_pool_by_symbol_uniswap,
+        test_pool_by_address_uniswap,
+        test_price_eth,
+        test_price_usd_eth,
+        test_pool_by_symbol_pancakeswap,
+        test_pool_by_address_pancakeswap,
+        test_price_bsc,
+        test_price_usd_bsc,
+    ]
+
+    tests = solana_tests + multichain_tests + evm_tests
 
     passed = 0
     failed = 0

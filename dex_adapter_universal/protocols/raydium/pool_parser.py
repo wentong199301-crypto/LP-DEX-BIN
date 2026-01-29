@@ -10,9 +10,86 @@ from decimal import Decimal
 from typing import Dict, Any, Optional
 
 from ...types import Pool, Token
+from ...types.common import STABLECOINS
+from ...types.solana_tokens import get_token_symbol
 from ...infra import RpcClient
 from .constants import CLMM_PROGRAM_ID
 from .math import sqrt_price_x64_to_price
+
+
+def parse_amm_config(account_data: bytes) -> Dict[str, Any]:
+    """
+    Parse AmmConfig account data.
+
+    Layout (verified from on-chain data):
+    - blob(8): discriminator
+    - u8: bump (offset 8)
+    - padding(2): alignment padding (offset 9-10)
+    - u16: index (offset 11)
+    - publicKey(32): owner (offset 13)
+    - u16: tick_spacing (offset 45)
+    - u32: trade_fee_rate (offset 47) - in 1e-6 units (e.g., 100 = 0.01%)
+    - u16: protocol_fee_rate (offset 51) - percentage of trade fee
+    - u64: create_pool_fee (offset 53)
+    - publicKey(32): fund_owner (offset 61)
+    - ...
+
+    Args:
+        account_data: Raw account data bytes
+
+    Returns:
+        Parsed config dict with fee rates as Decimals
+    """
+    # tick_spacing at offset 45
+    tick_spacing = struct.unpack_from("<H", account_data, 45)[0]
+
+    # trade_fee_rate at offset 47 (u32, in 1e-6 units)
+    trade_fee_rate_raw = struct.unpack_from("<I", account_data, 47)[0]
+
+    # protocol_fee_rate at offset 51 (u16, percentage of trade fee)
+    protocol_fee_rate_raw = struct.unpack_from("<H", account_data, 51)[0]
+
+    # Convert trade_fee_rate to decimal ratio (divide by 1e6)
+    # e.g., 100 -> 0.0001 -> 0.01%
+    trade_fee_rate = Decimal(trade_fee_rate_raw) / Decimal(1_000_000)
+
+    # Protocol fee is a percentage of the trade fee (not used directly)
+    protocol_fee_rate = Decimal(protocol_fee_rate_raw) / Decimal(100)
+
+    return {
+        "trade_fee_rate": trade_fee_rate,
+        "protocol_fee_rate": protocol_fee_rate,
+        "tick_spacing": tick_spacing,
+    }
+
+
+def fetch_amm_config(rpc: RpcClient, config_address: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch and parse AmmConfig account from RPC.
+
+    Args:
+        rpc: RPC client
+        config_address: AmmConfig account address
+
+    Returns:
+        Parsed config dict or None if fetch fails
+    """
+    try:
+        account = rpc.get_account_info(config_address, encoding="base64")
+        if not account:
+            return None
+
+        data = account.get("data", [])
+        if isinstance(data, list) and len(data) > 0:
+            raw_data = base64.b64decode(data[0])
+        elif isinstance(data, str):
+            raw_data = base64.b64decode(data)
+        else:
+            return None
+
+        return parse_amm_config(raw_data)
+    except Exception:
+        return None
 
 
 def parse_pool_state(account_data: bytes) -> Dict[str, Any]:
@@ -209,11 +286,83 @@ def fetch_pool_state(
     return parse_pool_state(raw_data)
 
 
+def _calculate_tvl(
+    rpc: RpcClient,
+    vault_a: str,
+    vault_b: str,
+    decimals_a: int,
+    decimals_b: int,
+    price: Decimal,
+    symbol_a: str = "",
+    symbol_b: str = "",
+) -> Decimal:
+    """
+    Calculate TVL from vault balances.
+
+    Args:
+        rpc: RPC client
+        vault_a: Token A vault address
+        vault_b: Token B vault address
+        decimals_a: Token A decimals
+        decimals_b: Token B decimals
+        price: Token A price in Token B terms
+        symbol_a: Token A symbol (for stablecoin detection)
+        symbol_b: Token B symbol (for stablecoin detection)
+
+    Returns:
+        TVL in USD
+    """
+    # Fetch vault balances
+    balance_a_raw = _get_token_balance(rpc, vault_a)
+    balance_b_raw = _get_token_balance(rpc, vault_b)
+
+    # Convert to UI amounts
+    balance_a = Decimal(balance_a_raw) / Decimal(10 ** decimals_a)
+    balance_b = Decimal(balance_b_raw) / Decimal(10 ** decimals_b)
+
+    # Detect which token is the stablecoin
+    token_a_is_stable = symbol_a.upper() in STABLECOINS
+    token_b_is_stable = symbol_b.upper() in STABLECOINS
+
+    if token_a_is_stable and not token_b_is_stable:
+        # Token A is stablecoin: TVL = balance_a + (balance_b / price)
+        if price > 0:
+            tvl = balance_a + (balance_b / price)
+        else:
+            tvl = balance_a
+    else:
+        # Token B is stablecoin (or both/neither): TVL = (balance_a * price) + balance_b
+        tvl = (balance_a * price) + balance_b
+
+    return tvl
+
+
+def _get_token_balance(rpc: RpcClient, token_account: str) -> int:
+    """
+    Get token balance from a token account.
+
+    Args:
+        rpc: RPC client
+        token_account: Token account address
+
+    Returns:
+        Raw token balance (lamports/smallest unit)
+    """
+    try:
+        result = rpc.get_token_account_balance(token_account)
+        if result and "amount" in result:
+            return int(result["amount"])
+    except Exception:
+        pass
+    return 0
+
+
 def pool_state_to_pool(
     pool_address: str,
     state: Dict[str, Any],
     token_a: Optional[Token] = None,
     token_b: Optional[Token] = None,
+    rpc: Optional[RpcClient] = None,
 ) -> Pool:
     """
     Convert parsed pool state to Pool dataclass
@@ -223,6 +372,7 @@ def pool_state_to_pool(
         state: Parsed pool state dict
         token_a: Optional token A info
         token_b: Optional token B info
+        rpc: Optional RPC client for fetching vault balances (needed for TVL)
 
     Returns:
         Pool dataclass
@@ -239,21 +389,51 @@ def pool_state_to_pool(
 
     # Create token objects if not provided
     if token_a is None:
+        symbol_a = get_token_symbol(state["mint_a"]) or state["mint_a"][:8]
         token_a = Token(
             mint=state["mint_a"],
-            symbol="",
+            symbol=symbol_a,
             decimals=decimals_a,
         )
 
     if token_b is None:
+        symbol_b = get_token_symbol(state["mint_b"]) or state["mint_b"][:8]
         token_b = Token(
             mint=state["mint_b"],
-            symbol="",
+            symbol=symbol_b,
             decimals=decimals_b,
         )
 
     # Construct symbol
     symbol = f"{token_a.symbol or 'TOKEN_A'}/{token_b.symbol or 'TOKEN_B'}"
+
+    # Calculate TVL from vault balances and fetch fee rate
+    tvl_usd = Decimal(0)
+    fee_rate = Decimal("0.0025")  # Default fallback
+    protocol_fee_rate = Decimal(0)
+    fund_fee_rate = Decimal(0)
+
+    if rpc is not None:
+        # Fetch TVL
+        try:
+            tvl_usd = _calculate_tvl(
+                rpc=rpc,
+                vault_a=state["vault_a"],
+                vault_b=state["vault_b"],
+                decimals_a=decimals_a,
+                decimals_b=decimals_b,
+                price=price,
+                symbol_a=token_a.symbol or "",
+                symbol_b=token_b.symbol or "",
+            )
+        except Exception:
+            pass  # TVL calculation failed, use default 0
+
+        # Fetch fee rate from AmmConfig
+        amm_config = fetch_amm_config(rpc, state["amm_config"])
+        if amm_config:
+            fee_rate = amm_config["trade_fee_rate"]
+            protocol_fee_rate = amm_config["protocol_fee_rate"]
 
     return Pool(
         address=pool_address,
@@ -262,6 +442,10 @@ def pool_state_to_pool(
         token0=token_a,
         token1=token_b,
         price=price,
+        tvl_usd=tvl_usd,
+        fee_rate=fee_rate,
+        protocol_fee_rate=protocol_fee_rate,
+        fund_fee_rate=fund_fee_rate,
         tick_spacing=state["tick_spacing"],
         current_tick=state["tick_current"],
         sqrt_price_x64=state["sqrt_price_x64"],

@@ -23,8 +23,8 @@ from ...types.evm_tokens import (
     is_native_token,
     get_native_symbol,
 )
-from ...infra.evm_signer import EVMSigner, create_web3, get_balance
-from ...errors import SignerError, ConfigurationError, TransactionError
+from ...infra.evm_signer import EVMSigner, create_web3
+from ...errors import SignerError, ConfigurationError, TransactionError, ErrorCode
 from ...config import config as global_config
 
 from .api import OneInchAPI
@@ -212,11 +212,12 @@ class OneInchAdapter:
             if approval_result and not approval_result.is_success:
                 return approval_result
 
-        # Convert slippage from bps to decimal (50 bps = 0.5% = 0.005)
-        slippage_decimal = slippage_bps / 10000.0
+        # Convert slippage from bps to percent (50 bps = 0.5%)
+        # 1inch API expects percent, not decimal (0.5 means 0.5%, not 0.005)
+        slippage_percent = slippage_bps / 100.0
 
-        max_retries = global_config.oneinch.max_retries
-        retry_delay = 2.0  # Base retry delay in seconds
+        max_retries = global_config.tx.swap_max_retries
+        retry_delay = global_config.tx.retry_delay
         last_error = None
 
         for attempt in range(max_retries):
@@ -227,7 +228,7 @@ class OneInchAdapter:
                     dst_token=to_address,
                     amount=raw_amount,
                     from_address=self._signer.address,
-                    slippage=slippage_decimal,
+                    slippage=slippage_percent,
                 )
 
                 # Build transaction
@@ -249,12 +250,12 @@ class OneInchAdapter:
                     base_fee = latest_block.get("baseFeePerGas", 0)
                     priority_fee_gwei = global_config.oneinch.priority_fee_gwei
                     max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
-                    max_fee = int(base_fee * 2) + max_priority_fee
+                    max_fee = int(base_fee * global_config.oneinch.base_fee_multiplier) + max_priority_fee
                     tx_dict["maxFeePerGas"] = max_fee
                     tx_dict["maxPriorityFeePerGas"] = max_priority_fee
                 else:
                     # BSC uses legacy gas price (no EIP-1559)
-                    tx_dict["gasPrice"] = self._web3.eth.gas_price
+                    tx_dict["gasPrice"] = int(self._web3.eth.gas_price * global_config.oneinch.bsc_gas_price_multiplier)
 
                 # Sign and send
                 result = self._signer.sign_and_send(
@@ -293,7 +294,7 @@ class OneInchAdapter:
                     return TxResult.failed(
                         f"Slippage exceeded: {e}",
                         recoverable=True,
-                        error_code="3001",
+                        error_code=ErrorCode.SLIPPAGE_EXCEEDED,
                     )
 
                 if is_recoverable and attempt < max_retries - 1:
@@ -331,8 +332,9 @@ class OneInchAdapter:
         if not self._signer:
             raise SignerError.not_configured()
 
-        # Convert slippage from bps to decimal (50 bps = 0.5% = 0.005)
-        slippage_decimal = quote.slippage_bps / 10000.0
+        # Convert slippage from bps to percent (50 bps = 0.5%)
+        # 1inch API expects percent, not decimal (0.5 means 0.5%, not 0.005)
+        slippage_percent = quote.slippage_bps / 100.0
 
         # Check and handle token approval (if not native token)
         if not is_native_token(quote.from_token):
@@ -347,7 +349,7 @@ class OneInchAdapter:
                 dst_token=quote.to_token,
                 amount=quote.from_amount,
                 from_address=self._signer.address,
-                slippage=slippage_decimal,
+                slippage=slippage_percent,
             )
 
             # Build transaction
@@ -370,12 +372,12 @@ class OneInchAdapter:
                 # Use configurable priority fee (default 0.1 gwei for minimum cost)
                 priority_fee_gwei = global_config.oneinch.priority_fee_gwei
                 max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
-                max_fee = int(base_fee * 2) + max_priority_fee
+                max_fee = int(base_fee * global_config.oneinch.base_fee_multiplier) + max_priority_fee
                 tx_dict["maxFeePerGas"] = max_fee
                 tx_dict["maxPriorityFeePerGas"] = max_priority_fee
             else:
                 # BSC uses legacy gas price (no EIP-1559)
-                tx_dict["gasPrice"] = self._web3.eth.gas_price
+                tx_dict["gasPrice"] = int(self._web3.eth.gas_price * global_config.oneinch.bsc_gas_price_multiplier)
 
             # Sign and send
             result = self._signer.sign_and_send(
@@ -449,12 +451,12 @@ class OneInchAdapter:
                 # Use configurable priority fee (default 0.1 gwei for minimum cost)
                 priority_fee_gwei = global_config.oneinch.priority_fee_gwei
                 max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
-                max_fee = int(base_fee * 2) + max_priority_fee
+                max_fee = int(base_fee * global_config.oneinch.base_fee_multiplier) + max_priority_fee
                 tx_dict["maxFeePerGas"] = max_fee
                 tx_dict["maxPriorityFeePerGas"] = max_priority_fee
             else:
                 # BSC uses legacy gas price (no EIP-1559)
-                tx_dict["gasPrice"] = self._web3.eth.gas_price
+                tx_dict["gasPrice"] = int(self._web3.eth.gas_price * global_config.oneinch.bsc_gas_price_multiplier)
 
             result = self._signer.sign_and_send(
                 self._web3,
@@ -496,39 +498,6 @@ class OneInchAdapter:
     def _get_decimals(self, token: str) -> int:
         """Get token decimals"""
         return get_token_decimals(token, self._chain_id)
-
-    def get_balance(self, token: str) -> Decimal:
-        """
-        Get token balance
-
-        Args:
-            token: Token symbol or address
-
-        Returns:
-            Balance in UI units
-        """
-        if not self._signer:
-            raise SignerError.not_configured()
-
-        token_address = resolve_token_address(token, self._chain_id)
-        decimals = self._get_decimals(token)
-
-        raw_balance = get_balance(
-            self._web3,
-            self._signer.address,
-            token_address if not is_native_token(token_address) else None,
-        )
-
-        return Decimal(raw_balance) / Decimal(10 ** decimals)
-
-    def get_native_balance(self) -> Decimal:
-        """Get native token balance (ETH or BNB)"""
-        native = get_native_symbol(self._chain_id)
-        return self.get_balance(native)
-
-    def get_token_balance(self, token: str) -> Decimal:
-        """Get ERC20 token balance"""
-        return self.get_balance(token)
 
     def estimate_gas(
         self,

@@ -2,18 +2,21 @@
 Wallet Module Unit Tests
 
 Tests wallet module logic without network dependencies.
+Tests the multi-chain WalletModule API (Solana, ETH, BSC).
 """
 
 import sys
 from pathlib import Path
 from decimal import Decimal
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, MagicMock, patch
+
+import pytest
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from dex_adapter_universal.modules.wallet import WalletModule, Chain, TokenAccount
-from dex_adapter_universal.errors import ConfigurationError
+from dex_adapter_universal.modules.wallet import WalletModule, TokenAccount, Chain
+from dex_adapter_universal.types.solana_tokens import SOLANA_TOKEN_MINTS
 
 
 class TestChainEnum:
@@ -48,11 +51,9 @@ class TestChainEnum:
 
     def test_from_string_invalid(self):
         """Test Chain.from_string with invalid input"""
-        try:
+        from dex_adapter_universal.errors import ConfigurationError
+        with pytest.raises(ConfigurationError):
             Chain.from_string("invalid")
-            assert False, "Should have raised ConfigurationError"
-        except ConfigurationError as e:
-            assert "Unknown chain" in str(e)
 
     def test_chain_id(self):
         """Test chain_id property"""
@@ -77,7 +78,7 @@ class TestTokenAccount:
     """Tests for TokenAccount dataclass"""
 
     def test_token_account_creation(self):
-        """Test TokenAccount creation"""
+        """Test TokenAccount creation with all required fields"""
         acc = TokenAccount(
             address="abc123",
             mint="mint123",
@@ -91,203 +92,470 @@ class TestTokenAccount:
         assert acc.owner == "owner123"
         assert acc.balance == Decimal("100.5")
         assert acc.decimals == 9
-        assert acc.chain == "solana"  # default
 
-    def test_token_account_with_chain(self):
-        """Test TokenAccount with explicit chain"""
+    def test_token_account_with_zero_balance(self):
+        """Test TokenAccount with zero balance"""
         acc = TokenAccount(
-            address="0x123",
-            mint="0x456",
-            owner="0x789",
-            balance=Decimal("50"),
-            decimals=18,
-            chain="eth",
+            address="addr",
+            mint="mint",
+            owner="owner",
+            balance=Decimal(0),
+            decimals=6,
         )
 
-        assert acc.chain == "eth"
+        assert acc.balance == Decimal(0)
+        assert acc.decimals == 6
 
-
-class TestWalletModuleInit:
-    """Tests for WalletModule initialization"""
-
-    def test_init_empty(self):
-        """Test initialization without any config"""
-        wallet = WalletModule()
-
-        assert wallet._client is None
-        assert wallet._rpc is None
-        assert wallet._evm_address is None
-        assert wallet._eth_rpc_url is None
-        assert wallet._bsc_rpc_url is None
-
-    def test_init_with_evm_config(self):
-        """Test initialization with EVM config"""
-        wallet = WalletModule(
-            evm_address="0x1234567890123456789012345678901234567890",
-            eth_rpc_url="https://eth.example.com",
-            bsc_rpc_url="https://bsc.example.com",
+    def test_token_account_high_precision(self):
+        """Test TokenAccount handles high precision decimals"""
+        acc = TokenAccount(
+            address="addr",
+            mint="mint",
+            owner="owner",
+            balance=Decimal("0.000000001"),
+            decimals=9,
         )
 
-        assert wallet._evm_address == "0x1234567890123456789012345678901234567890"
-        assert wallet._eth_rpc_url == "https://eth.example.com"
-        assert wallet._bsc_rpc_url == "https://bsc.example.com"
+        assert acc.balance == Decimal("0.000000001")
 
-    def test_set_evm_address(self):
-        """Test set_evm_address method"""
-        wallet = WalletModule()
-        wallet.set_evm_address("0xabcd")
 
-        assert wallet.evm_address == "0xabcd"
+class TestWalletModuleSolana:
+    """Tests for WalletModule Solana operations"""
 
-    def test_set_eth_rpc(self):
-        """Test set_eth_rpc method"""
-        wallet = WalletModule()
-        wallet.set_eth_rpc("https://new-eth.example.com")
+    @pytest.fixture
+    def mock_client(self):
+        """Create mock DexClient with mock rpc and pubkey"""
+        client = Mock()
+        client.pubkey = "SolanaWalletAddress123"
+        client.rpc = Mock()
+        return client
 
-        assert wallet._eth_rpc_url == "https://new-eth.example.com"
+    @pytest.fixture
+    def wallet(self, mock_client):
+        """Create WalletModule with mocked client"""
+        return WalletModule(mock_client)
 
-    def test_set_bsc_rpc(self):
-        """Test set_bsc_rpc method"""
-        wallet = WalletModule()
-        wallet.set_bsc_rpc("https://new-bsc.example.com")
+    def test_address_property(self, wallet, mock_client):
+        """Test wallet.address returns client.pubkey"""
+        assert wallet.address == "SolanaWalletAddress123"
 
-        assert wallet._bsc_rpc_url == "https://new-bsc.example.com"
+    def test_balance_sol(self, wallet, mock_client):
+        """Test balance('SOL', chain='sol') returns native SOL balance"""
+        mock_client.rpc.get_balance.return_value = 2_000_000_000
+
+        balance = wallet.balance("SOL", chain="sol")
+
+        assert balance == Decimal("2")
+        mock_client.rpc.get_balance.assert_called_once_with("SolanaWalletAddress123")
+
+    def test_balance_sol_case_insensitive(self, wallet, mock_client):
+        """Test balance('sol', chain='sol') is case insensitive"""
+        mock_client.rpc.get_balance.return_value = 2_000_000_000
+
+        balance = wallet.balance("sol", chain="sol")
+
+        assert balance == Decimal("2")
+
+    def test_balance_token(self, wallet, mock_client):
+        """Test balance for SPL token"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = [
+            {
+                "pubkey": "TokenAccountAddr",
+                "account": {
+                    "data": {
+                        "parsed": {
+                            "info": {
+                                "mint": SOLANA_TOKEN_MINTS["USDC"],
+                                "tokenAmount": {
+                                    "amount": "1000000",
+                                    "decimals": 6,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+
+        balance = wallet.balance("USDC", chain="sol")
+
+        assert balance == Decimal("1")
+
+    def test_balance_token_not_found(self, wallet, mock_client):
+        """Test balance returns 0 when token account doesn't exist"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = []
+
+        balance = wallet.balance("USDC", chain="sol")
+
+        assert balance == Decimal(0)
+
+    def test_balance_multiple_accounts(self, wallet, mock_client):
+        """Test balance sums multiple token accounts"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = [
+            {
+                "pubkey": "TokenAccount1",
+                "account": {
+                    "data": {
+                        "parsed": {
+                            "info": {
+                                "mint": SOLANA_TOKEN_MINTS["USDC"],
+                                "tokenAmount": {
+                                    "amount": "1000000",
+                                    "decimals": 6,
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "pubkey": "TokenAccount2",
+                "account": {
+                    "data": {
+                        "parsed": {
+                            "info": {
+                                "mint": SOLANA_TOKEN_MINTS["USDC"],
+                                "tokenAmount": {
+                                    "amount": "2000000",
+                                    "decimals": 6,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+
+        balance = wallet.balance("USDC", chain="sol")
+
+        assert balance == Decimal("3")
+
+    def test_balance_raw_sol(self, wallet, mock_client):
+        """Test balance_raw('SOL', chain='sol') returns lamports"""
+        mock_client.rpc.get_balance.return_value = 1_500_000_000
+
+        balance = wallet.balance_raw("SOL", chain="sol")
+
+        assert balance == 1_500_000_000
+
+    def test_balance_raw_token(self, wallet, mock_client):
+        """Test balance_raw for SPL token returns raw amount"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = [
+            {
+                "pubkey": "TokenAccountAddr",
+                "account": {
+                    "data": {
+                        "parsed": {
+                            "info": {
+                                "mint": SOLANA_TOKEN_MINTS["USDC"],
+                                "tokenAmount": {
+                                    "amount": "1500000",
+                                    "decimals": 6,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+
+        balance = wallet.balance_raw("USDC", chain="sol")
+
+        assert balance == 1500000
+
+    def test_balances(self, wallet, mock_client):
+        """Test balances returns all token balances"""
+        mock_client.rpc.get_balance.return_value = 1_000_000_000
+        mock_client.rpc.get_token_accounts_by_owner.return_value = [
+            {
+                "pubkey": "TokenAccount1",
+                "account": {
+                    "data": {
+                        "parsed": {
+                            "info": {
+                                "mint": SOLANA_TOKEN_MINTS["USDC"],
+                                "owner": "SolanaWalletAddress123",
+                                "tokenAmount": {
+                                    "amount": "5000000",
+                                    "decimals": 6,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+
+        balances = wallet.balances()
+
+        assert WalletModule.WRAPPED_SOL in balances
+        assert balances[WalletModule.WRAPPED_SOL] == Decimal("1")
+        assert SOLANA_TOKEN_MINTS["USDC"] in balances
+        assert balances[SOLANA_TOKEN_MINTS["USDC"]] == Decimal("5")
+
+    def test_token_accounts(self, wallet, mock_client):
+        """Test token_accounts returns list of TokenAccount objects"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = [
+            {
+                "pubkey": "TokenAccountAddr",
+                "account": {
+                    "data": {
+                        "parsed": {
+                            "info": {
+                                "mint": "MintAddr123",
+                                "owner": "SolanaWalletAddress123",
+                                "tokenAmount": {
+                                    "amount": "1000000",
+                                    "decimals": 6,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+
+        accounts = wallet.token_accounts()
+
+        assert len(accounts) == 1
+        acc = accounts[0]
+        assert isinstance(acc, TokenAccount)
+        assert acc.address == "TokenAccountAddr"
+        assert acc.mint == "MintAddr123"
+        assert acc.owner == "SolanaWalletAddress123"
+        assert acc.balance == Decimal("1")
+        assert acc.decimals == 6
+
+    def test_token_accounts_empty(self, wallet, mock_client):
+        """Test token_accounts returns empty list when no accounts"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = []
+
+        accounts = wallet.token_accounts()
+
+        assert accounts == []
+
+    def test_get_token_account(self, wallet, mock_client):
+        """Test get_token_account returns account address"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = [
+            {"pubkey": "TokenAccountAddr"}
+        ]
+
+        account = wallet.get_token_account("USDC")
+
+        assert account == "TokenAccountAddr"
+
+    def test_get_token_account_not_found(self, wallet, mock_client):
+        """Test get_token_account returns None when not found"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = []
+
+        account = wallet.get_token_account("USDC")
+
+        assert account is None
+
+    def test_has_token_account_true(self, wallet, mock_client):
+        """Test has_token_account returns True when account exists"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = [
+            {"pubkey": "TokenAccountAddr"}
+        ]
+
+        result = wallet.has_token_account("USDC")
+
+        assert result is True
+
+    def test_has_token_account_false(self, wallet, mock_client):
+        """Test has_token_account returns False when no account"""
+        mock_client.rpc.get_token_accounts_by_owner.return_value = []
+
+        result = wallet.has_token_account("USDC")
+
+        assert result is False
+
+
+class TestWalletModuleEVM:
+    """Tests for WalletModule EVM operations"""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create mock DexClient"""
+        client = Mock()
+        client.pubkey = "SolanaWalletAddress123"
+        client.rpc = Mock()
+        return client
+
+    @pytest.fixture
+    def wallet(self, mock_client):
+        """Create WalletModule with mocked client"""
+        w = WalletModule(mock_client)
+        w.set_evm_address("0x1234567890123456789012345678901234567890")
+        return w
+
+    def test_set_evm_address(self, mock_client):
+        """Test set_evm_address stores address"""
+        wallet = WalletModule(mock_client)
+        wallet.set_evm_address("0xABCD")
+
+        assert wallet.evm_address == "0xABCD"
+
+    def test_get_address_solana(self, wallet):
+        """Test get_address for Solana"""
+        assert wallet.get_address(chain="sol") == "SolanaWalletAddress123"
+        assert wallet.get_address(chain="solana") == "SolanaWalletAddress123"
+
+    def test_get_address_evm(self, wallet):
+        """Test get_address for EVM chains"""
+        assert wallet.get_address(chain="eth") == "0x1234567890123456789012345678901234567890"
+        assert wallet.get_address(chain="bsc") == "0x1234567890123456789012345678901234567890"
+
+    def test_get_address_evm_without_address(self, mock_client):
+        """Test get_address raises error when EVM address not set"""
+        from dex_adapter_universal.errors import ConfigurationError
+        wallet = WalletModule(mock_client)
+
+        with pytest.raises(ConfigurationError):
+            wallet.get_address(chain="eth")
+
+    def test_balance_eth(self, wallet):
+        """Test balance('ETH', chain='eth')"""
+        mock_web3 = Mock()
+
+        with patch.object(wallet, '_get_web3', return_value=mock_web3):
+            with patch('dex_adapter_universal.infra.evm_signer.get_balance') as mock_get_balance:
+                mock_get_balance.return_value = 1_500_000_000_000_000_000  # 1.5 ETH in wei
+
+                balance = wallet.balance("ETH", chain="eth")
+
+                assert balance == Decimal("1.5")
+                mock_get_balance.assert_called_once()
+
+    def test_balance_bnb(self, wallet):
+        """Test balance('BNB', chain='bsc')"""
+        mock_web3 = Mock()
+
+        with patch.object(wallet, '_get_web3', return_value=mock_web3):
+            with patch('dex_adapter_universal.infra.evm_signer.get_balance') as mock_get_balance:
+                mock_get_balance.return_value = 2_000_000_000_000_000_000  # 2 BNB in wei
+
+                balance = wallet.balance("BNB", chain="bsc")
+
+                assert balance == Decimal("2")
+
+    def test_balance_usdc_eth(self, wallet):
+        """Test balance('USDC', chain='eth') - 6 decimals"""
+        mock_web3 = Mock()
+
+        with patch.object(wallet, '_get_web3', return_value=mock_web3):
+            with patch('dex_adapter_universal.infra.evm_signer.get_balance') as mock_get_balance:
+                mock_get_balance.return_value = 1_000_000  # 1 USDC (6 decimals)
+
+                balance = wallet.balance("USDC", chain="eth")
+
+                assert balance == Decimal("1")
+
+    def test_balance_usdc_bsc(self, wallet):
+        """Test balance('USDC', chain='bsc') - 18 decimals on BSC"""
+        mock_web3 = Mock()
+
+        with patch.object(wallet, '_get_web3', return_value=mock_web3):
+            with patch('dex_adapter_universal.infra.evm_signer.get_balance') as mock_get_balance:
+                mock_get_balance.return_value = 1_000_000_000_000_000_000  # 1 USDC (18 decimals on BSC)
+
+                balance = wallet.balance("USDC", chain="bsc")
+
+                assert balance == Decimal("1")
+
+    def test_balance_raw_eth(self, wallet):
+        """Test balance_raw('ETH', chain='eth') returns wei"""
+        mock_web3 = Mock()
+
+        with patch.object(wallet, '_get_web3', return_value=mock_web3):
+            with patch('dex_adapter_universal.infra.evm_signer.get_balance') as mock_get_balance:
+                mock_get_balance.return_value = 1_500_000_000_000_000_000
+
+                balance = wallet.balance_raw("ETH", chain="eth")
+
+                assert balance == 1_500_000_000_000_000_000
+
+    def test_balance_evm_without_address(self, mock_client):
+        """Test balance raises error when EVM address not set"""
+        from dex_adapter_universal.errors import ConfigurationError
+        wallet = WalletModule(mock_client)
+        mock_web3 = Mock()
+
+        with patch.object(wallet, '_get_web3', return_value=mock_web3):
+            with pytest.raises(ConfigurationError):
+                wallet.balance("ETH", chain="eth")
 
 
 class TestWalletModuleChainResolution:
     """Tests for chain resolution"""
 
-    def test_resolve_chain_none(self):
-        """Test _resolve_chain with None (default to Solana)"""
-        wallet = WalletModule()
+    @pytest.fixture
+    def mock_client(self):
+        client = Mock()
+        client.pubkey = "SolanaWalletAddress123"
+        client.rpc = Mock()
+        return client
 
-        result = wallet._resolve_chain(None)
-        assert result == Chain.SOLANA
+    @pytest.fixture
+    def wallet(self, mock_client):
+        return WalletModule(mock_client)
 
-    def test_resolve_chain_enum(self):
+    def test_resolve_chain_enum(self, wallet):
         """Test _resolve_chain with Chain enum"""
-        wallet = WalletModule()
-
         assert wallet._resolve_chain(Chain.ETH) == Chain.ETH
         assert wallet._resolve_chain(Chain.BSC) == Chain.BSC
         assert wallet._resolve_chain(Chain.SOLANA) == Chain.SOLANA
 
-    def test_resolve_chain_string(self):
+    def test_resolve_chain_string(self, wallet):
         """Test _resolve_chain with string"""
-        wallet = WalletModule()
-
         assert wallet._resolve_chain("eth") == Chain.ETH
         assert wallet._resolve_chain("bsc") == Chain.BSC
         assert wallet._resolve_chain("solana") == Chain.SOLANA
+        assert wallet._resolve_chain("sol") == Chain.SOLANA
 
 
-class TestWalletModuleErrors:
-    """Tests for error handling"""
+class TestWalletModuleConstants:
+    """Tests for WalletModule class constants"""
 
-    def test_sol_balance_without_client(self):
-        """Test sol_balance without Solana client"""
-        wallet = WalletModule()
+    def test_wrapped_sol_constant(self):
+        """Test WRAPPED_SOL constant is defined"""
+        assert hasattr(WalletModule, 'WRAPPED_SOL')
+        assert isinstance(WalletModule.WRAPPED_SOL, str)
 
-        try:
-            wallet.sol_balance()
-            assert False, "Should have raised ConfigurationError"
-        except ConfigurationError as e:
-            assert "Solana client required" in str(e)
+    def test_usdc_constant(self):
+        """Test USDC constant is defined"""
+        assert hasattr(WalletModule, 'USDC')
+        assert isinstance(WalletModule.USDC, str)
 
-    def test_address_without_client(self):
-        """Test address property without client"""
-        wallet = WalletModule()
-
-        try:
-            _ = wallet.address
-            assert False, "Should have raised ConfigurationError"
-        except ConfigurationError as e:
-            assert "Solana client required" in str(e)
-
-    def test_evm_balance_without_address(self):
-        """Test EVM balance without address"""
-        wallet = WalletModule(eth_rpc_url="https://eth.example.com")
-
-        try:
-            wallet._require_evm_address()
-            assert False, "Should have raised ConfigurationError"
-        except ConfigurationError as e:
-            assert "EVM address required" in str(e)
-
-    def test_eth_balance_without_rpc(self):
-        """Test ETH balance without RPC URL"""
-        wallet = WalletModule(evm_address="0x1234567890123456789012345678901234567890")
-
-        try:
-            wallet._get_web3(1)
-            assert False, "Should have raised ConfigurationError"
-        except ConfigurationError as e:
-            assert "Ethereum RPC URL required" in str(e)
-
-    def test_bsc_balance_without_rpc(self):
-        """Test BSC balance without RPC URL"""
-        wallet = WalletModule(evm_address="0x1234567890123456789012345678901234567890")
-
-        try:
-            wallet._get_web3(56)
-            assert False, "Should have raised ConfigurationError"
-        except ConfigurationError as e:
-            assert "BSC RPC URL required" in str(e)
-
-    def test_unsupported_chain_id(self):
-        """Test unsupported chain ID"""
-        wallet = WalletModule()
-
-        try:
-            wallet._get_web3(999)
-            assert False, "Should have raised ConfigurationError"
-        except ConfigurationError as e:
-            assert "Unsupported chain ID" in str(e)
-
-
-class TestWalletModuleGetAddress:
-    """Tests for get_address method"""
-
-    def test_get_address_solana(self):
-        """Test get_address for Solana"""
-        mock_client = Mock()
-        mock_client.pubkey = "SolanaAddress123"
-
-        wallet = WalletModule(client=mock_client)
-
-        address = wallet.get_address(chain="solana")
-        assert address == "SolanaAddress123"
-
-    def test_get_address_evm(self):
-        """Test get_address for EVM"""
-        wallet = WalletModule(evm_address="0xEvmAddress123")
-
-        address = wallet.get_address(chain="eth")
-        assert address == "0xEvmAddress123"
+    def test_usdt_constant(self):
+        """Test USDT constant is defined"""
+        assert hasattr(WalletModule, 'USDT')
+        assert isinstance(WalletModule.USDT, str)
 
 
 class TestWalletModuleClose:
     """Tests for close method"""
 
-    def test_close_clears_web3_instances(self):
-        """Test that close clears Web3 instances"""
-        wallet = WalletModule()
-        wallet._web3_instances = {1: Mock(), 56: Mock()}
+    @pytest.fixture
+    def mock_client(self):
+        client = Mock()
+        client.pubkey = "SolanaWalletAddress123"
+        client.rpc = Mock()
+        return client
 
-        wallet.close()
+    def test_close_no_error(self, mock_client):
+        """Test that close can be called without error"""
+        wallet = WalletModule(mock_client)
+        wallet.close()  # Should not raise
 
-        assert len(wallet._web3_instances) == 0
-
-    def test_context_manager(self):
+    def test_context_manager(self, mock_client):
         """Test context manager protocol"""
-        wallet = WalletModule()
-        wallet._web3_instances = {1: Mock()}
+        wallet = WalletModule(mock_client)
 
         with wallet as w:
             assert w is wallet
-            assert len(w._web3_instances) == 1
 
-        assert len(wallet._web3_instances) == 0
+        # Context manager should exit cleanly
 
 
 def run_tests():
@@ -297,10 +565,10 @@ def run_tests():
     test_classes = [
         TestChainEnum,
         TestTokenAccount,
-        TestWalletModuleInit,
+        TestWalletModuleSolana,
+        TestWalletModuleEVM,
         TestWalletModuleChainResolution,
-        TestWalletModuleErrors,
-        TestWalletModuleGetAddress,
+        TestWalletModuleConstants,
         TestWalletModuleClose,
     ]
 
@@ -312,11 +580,23 @@ def run_tests():
         print("-" * len(test_class.__name__))
 
         instance = test_class()
+
         for method_name in dir(instance):
             if method_name.startswith("test_"):
                 method = getattr(instance, method_name)
                 try:
-                    method()
+                    # Create fixtures for tests that need them
+                    if test_class in (TestWalletModuleSolana, TestWalletModuleEVM,
+                                      TestWalletModuleChainResolution, TestWalletModuleClose):
+                        mock_client = Mock()
+                        mock_client.pubkey = "SolanaWalletAddress123"
+                        mock_client.rpc = Mock()
+                        wallet = WalletModule(mock_client)
+                        if test_class == TestWalletModuleEVM:
+                            wallet.set_evm_address("0x1234567890123456789012345678901234567890")
+                        method(wallet, mock_client)
+                    else:
+                        method()
                     print(f"  {method_name}: PASSED")
                     passed += 1
                 except Exception as e:

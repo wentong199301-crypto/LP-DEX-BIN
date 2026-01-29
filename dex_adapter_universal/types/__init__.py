@@ -2,7 +2,7 @@
 Type definitions for DEX Adapter
 """
 
-from .common import Token
+from .common import Token, STABLECOINS
 from .pool import Pool
 from .position import Position
 from .price import PriceRange, RangeMode
@@ -22,9 +22,22 @@ from .evm_tokens import (
     get_native_symbol,
 )
 
+# Pool registry
+from .pool import (
+    KNOWN_POOLS,
+    RAYDIUM_POOLS,
+    METEORA_POOLS,
+    UNISWAP_POOLS,
+    PANCAKESWAP_POOLS,
+    get_pool_address,
+    list_pools,
+    list_dexes,
+)
+
 __all__ = [
-    # Solana types
+    # Common types
     "Token",
+    "STABLECOINS",
     "Pool",
     "Position",
     "PriceRange",
@@ -43,4 +56,13 @@ __all__ = [
     "resolve_evm_token_address",
     "is_native_token",
     "get_native_symbol",
+    # Pool registry
+    "KNOWN_POOLS",
+    "RAYDIUM_POOLS",
+    "METEORA_POOLS",
+    "UNISWAP_POOLS",
+    "PANCAKESWAP_POOLS",
+    "get_pool_address",
+    "list_pools",
+    "list_dexes",
 ]

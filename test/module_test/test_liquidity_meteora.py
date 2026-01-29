@@ -4,6 +4,7 @@ Meteora Liquidity Module Integration Tests
 WARNING: These tests execute REAL LP operations and spend REAL tokens!
 
 Tests Meteora DLMM LP operations with live Solana RPC.
+All operations have automatic retry logic for transient failures.
 """
 
 import sys
@@ -15,16 +16,47 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from conftest import create_client, skip_if_no_config
+from dex_adapter_universal.types.pool import METEORA_POOLS
 
 
-# Known Meteora DLMM SOL/USDC pool address for testing
-# Pool with highest liquidity from https://dlmm-api.meteora.ag/pair/all
-# Token0=SOL, Token1=USDC, Bin Step=8
-METEORA_SOL_USDC_POOL = "8M5rjeDQKW4w4rmWFQLTqCYVuA1rMe9Z2QQ2SZResD9M"
+# Use pool from registry
+METEORA_SOL_USDC_POOL = METEORA_POOLS["SOL/USDC"]
 
 # Minimum balances required for LP tests
 MIN_SOL_BALANCE = Decimal("0.03")
 MIN_USDC_BALANCE = Decimal("2")
+
+
+def test_retry_config_meteora(client):
+    """Test that retry configuration is properly set for Meteora operations"""
+    print("Testing retry config (Meteora)...")
+
+    from dex_adapter_universal.config import config
+    from dex_adapter_universal.infra.retry import execute_with_retry, classify_error
+
+    # Verify retry config values
+    assert config.tx.max_retries >= 1, "max_retries should be at least 1"
+    assert config.tx.retry_delay > 0, "retry_delay should be positive"
+
+    print(f"  max_retries: {config.tx.max_retries}")
+    print(f"  retry_delay: {config.tx.retry_delay}s")
+
+    # Verify LP slippage config
+    assert config.trading.default_lp_slippage_bps >= 0, "LP slippage should be non-negative"
+    print(f"  default_lp_slippage_bps: {config.trading.default_lp_slippage_bps}")
+
+    # Verify retry helper is importable and works
+    assert callable(execute_with_retry), "execute_with_retry should be callable"
+    assert callable(classify_error), "classify_error should be callable"
+
+    # Test error classification
+    is_recoverable, is_slippage, error_code = classify_error(Exception("timeout error"))
+    assert is_recoverable, "timeout should be recoverable"
+
+    is_recoverable, is_slippage, error_code = classify_error(Exception("slippage exceeded"))
+    assert is_slippage, "slippage should be identified"
+
+    print("  retry config (Meteora): PASSED")
 
 
 def test_list_positions_meteora(client):
@@ -68,7 +100,6 @@ def test_open_position_meteora(client):
         pool=pool,
         price_range=PriceRange.percent(0.02),
         amount_usd=Decimal("2"),
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -99,7 +130,6 @@ def test_open_position_one_bin_meteora(client):
         pool=pool,
         price_range=PriceRange.one_tick(),  # Maps to one_bin_range for Meteora
         amount_usd=Decimal("2"),
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -138,7 +168,6 @@ def test_add_liquidity_meteora(client):
         position=position,
         amount0=Decimal("0.002"),  # 0.002 SOL
         amount1=Decimal("0.2"),    # 0.2 USDC
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -166,7 +195,6 @@ def test_remove_liquidity_partial_meteora(client):
     result = client.lp.remove(
         position=position,
         percent=25.0,
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -203,8 +231,8 @@ def test_claim_fees_meteora(client):
 
 
 def test_close_position_meteora(client):
-    """Test closing a Meteora LP position with real transaction"""
-    print("Testing close position (Meteora) (REAL TRANSACTION)...")
+    """Test closing a single Meteora LP position with real transaction"""
+    print("Testing close single position (Meteora) (REAL TRANSACTION)...")
 
     # Get existing Meteora positions
     positions = client.lp.positions(dex="meteora")
@@ -219,7 +247,35 @@ def test_close_position_meteora(client):
     print(f"  Signature: {result.signature}")
 
     assert result.is_success, f"Close position failed: {result.error}"
-    print("  close position (Meteora): PASSED")
+    print("  close single position (Meteora): PASSED")
+
+
+def test_close_all_positions_meteora(client):
+    """Test closing all Meteora LP positions with real transaction"""
+    print("Testing close ALL positions (Meteora) (REAL TRANSACTION)...")
+
+    # Check how many positions exist
+    positions = client.lp.positions(dex="meteora")
+    print(f"  Found {len(positions)} Meteora positions to close")
+
+    if not positions:
+        print("  No positions to close (this is OK)")
+        print("  close ALL positions (Meteora): PASSED")
+        return
+
+    # Close all Meteora positions
+    results = client.lp.close(dex="meteora")
+
+    print(f"  Closed {len(results)} position(s):")
+    for i, result in enumerate(results):
+        status = "OK" if result.is_success else "FAILED"
+        print(f"    [{i+1}] {status}: {result.signature}")
+
+    # Check all succeeded
+    failed = [r for r in results if not r.is_success]
+    assert len(failed) == 0, f"{len(failed)} position(s) failed to close"
+
+    print("  close ALL positions (Meteora): PASSED")
 
 
 def test_full_lifecycle_meteora(client):
@@ -245,7 +301,6 @@ def test_full_lifecycle_meteora(client):
         pool=pool,
         price_range=PriceRange.percent(0.02),
         amount_usd=Decimal("2"),
-        slippage_bps=100,
     )
 
     assert open_result.is_success, f"Open failed: {open_result.error}"
@@ -275,12 +330,16 @@ def test_full_lifecycle_meteora(client):
     claim_result = client.lp.claim(position)
     print(f"    Claim status: {claim_result.status}")
 
-    # Step 4: Close position
-    print(f"  Step 4: Closing position...")
-    close_result = client.lp.close(position)
+    # Step 4: Close ALL Meteora positions
+    print(f"  Step 4: Closing ALL Meteora positions...")
+    close_results = client.lp.close(dex="meteora")
 
-    print(f"    Closed: {close_result.signature}")
-    assert close_result.is_success, f"Close failed: {close_result.error}"
+    if isinstance(close_results, list):
+        print(f"    Closed {len(close_results)} position(s)")
+        for result in close_results:
+            assert result.is_success, f"Close failed: {result.error}"
+    else:
+        assert close_results.is_success, f"Close failed: {close_results.error}"
 
     print("  full lifecycle (Meteora): PASSED")
 
@@ -307,6 +366,7 @@ def main():
     print()
 
     tests = [
+        test_retry_config_meteora,
         test_list_positions_meteora,
         test_open_position_meteora,
         test_open_position_one_bin_meteora,
@@ -314,6 +374,7 @@ def main():
         test_remove_liquidity_partial_meteora,
         test_claim_fees_meteora,
         test_close_position_meteora,
+        test_close_all_positions_meteora,
         test_full_lifecycle_meteora,
     ]
 

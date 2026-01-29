@@ -10,7 +10,6 @@ Provides token swap operations across multiple chains:
 from __future__ import annotations
 
 from decimal import Decimal
-from enum import Enum
 from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
@@ -23,57 +22,8 @@ from ..infra.evm_signer import EVMSigner, create_web3
 from ..errors import ConfigurationError, OperationNotSupported
 from ..config import config
 
-
-class Chain(Enum):
-    """Supported blockchain networks"""
-    SOLANA = "solana"
-    ETH = "eth"
-    BSC = "bsc"
-
-    @classmethod
-    def from_string(cls, value: str) -> "Chain":
-        """Convert string to Chain enum (case-insensitive)"""
-        value_lower = value.lower()
-        if value_lower in ("solana", "sol"):
-            return cls.SOLANA
-        elif value_lower in ("eth", "ethereum", "1"):
-            return cls.ETH
-        elif value_lower in ("bsc", "bnb", "56"):
-            return cls.BSC
-        else:
-            raise ConfigurationError.invalid("chain", f"Unknown chain: {value}. Supported: solana, eth, bsc")
-
-    @property
-    def chain_id(self) -> Optional[int]:
-        """Get EVM chain ID (None for Solana)"""
-        if self == Chain.ETH:
-            return 1
-        elif self == Chain.BSC:
-            return 56
-        return None
-
-    @property
-    def is_evm(self) -> bool:
-        """Check if this is an EVM chain"""
-        return self in (Chain.ETH, Chain.BSC)
-
-    @property
-    def native_token(self) -> str:
-        """Get native token symbol"""
-        if self == Chain.SOLANA:
-            return "SOL"
-        elif self == Chain.ETH:
-            return "ETH"
-        elif self == Chain.BSC:
-            return "BNB"
-        return "ETH"
-
-    @property
-    def aggregator(self) -> str:
-        """Get aggregator name for this chain"""
-        if self == Chain.SOLANA:
-            return "Jupiter"
-        return "1inch"
+# Import Chain from wallet module (single source of truth)
+from .wallet import Chain
 
 
 class SwapModule:
@@ -111,26 +61,20 @@ class SwapModule:
         self._client = client
         self._evm_signer = evm_signer
 
-        # Lazy-initialized adapters
-        self._jupiter_adapter: Optional[JupiterAdapter] = None
-        self._oneinch_adapters: dict[int, OneInchAdapter] = {}
-
     def _get_jupiter_adapter(self) -> JupiterAdapter:
-        """Get or create Jupiter adapter for Solana"""
-        if self._jupiter_adapter is None:
-            if self._client is None:
-                raise ConfigurationError.missing(
-                    "DexClient (required for Solana swaps - initialize SwapModule with client parameter)"
-                )
-            self._jupiter_adapter = JupiterAdapter(
-                self._client.rpc,
-                self._client.signer,
-                self._client.tx_builder,
+        """Create Jupiter adapter for Solana"""
+        if self._client is None:
+            raise ConfigurationError.missing(
+                "DexClient (required for Solana swaps - initialize SwapModule with client parameter)"
             )
-        return self._jupiter_adapter
+        return JupiterAdapter(
+            self._client.rpc,
+            self._client.signer,
+            self._client.tx_builder,
+        )
 
     def _get_oneinch_adapter(self, chain_id: int, require_signer: bool = False) -> OneInchAdapter:
-        """Get or create 1inch adapter for EVM chain
+        """Create 1inch adapter for EVM chain
 
         Args:
             chain_id: EVM chain ID (1 for ETH, 56 for BSC)
@@ -144,12 +88,10 @@ class SwapModule:
                 "Initialize SwapModule with evm_signer parameter or set EVM_PRIVATE_KEY environment variable."
             )
 
-        if chain_id not in self._oneinch_adapters:
-            self._oneinch_adapters[chain_id] = OneInchAdapter(
-                chain_id=chain_id,
-                signer=self._evm_signer,
-            )
-        return self._oneinch_adapters[chain_id]
+        return OneInchAdapter(
+            chain_id=chain_id,
+            signer=self._evm_signer,
+        )
 
     def _resolve_chain(self, chain: Union[str, Chain, None]) -> Chain:
         """Resolve chain parameter to Chain enum"""
@@ -352,14 +294,10 @@ class SwapModule:
             signer: EVMSigner instance
         """
         self._evm_signer = signer
-        # Clear cached adapters so they use new signer
-        self._oneinch_adapters.clear()
 
     def close(self):
-        """Close all adapters and release resources"""
-        for adapter in self._oneinch_adapters.values():
-            adapter.close()
-        self._oneinch_adapters.clear()
+        """No resources to clean up (no caching)"""
+        pass
 
     def __enter__(self) -> "SwapModule":
         return self

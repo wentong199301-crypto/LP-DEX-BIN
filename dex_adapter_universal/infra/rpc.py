@@ -44,10 +44,10 @@ class RpcClientConfig:
         config = RpcClientConfig(timeout_seconds=60, max_retries=5)
         client = RpcClient(endpoint, config=config)
     """
-    timeout_seconds: float = None
-    max_retries: int = None
-    retry_delay_seconds: float = None
-    commitment: str = None
+    timeout_seconds: Optional[float] = None
+    max_retries: Optional[int] = None
+    retry_delay_seconds: Optional[float] = None
+    commitment: Optional[str] = None
 
     def __post_init__(self):
         """Apply defaults from global config for any unset values"""
@@ -56,7 +56,7 @@ class RpcClientConfig:
         if self.max_retries is None:
             self.max_retries = global_config.rpc.max_retries
         if self.retry_delay_seconds is None:
-            self.retry_delay_seconds = global_config.rpc.retry_delay_seconds
+            self.retry_delay_seconds = global_config.tx.retry_delay
         if self.commitment is None:
             self.commitment = global_config.rpc.commitment
 
@@ -110,7 +110,7 @@ class RpcClient:
         self._config = config or RpcClientConfig()
         self._current_endpoint_idx = 0
         self._client: Optional[httpx.Client] = None
-        self._client_lock = threading.Lock()
+        self._lock = threading.Lock()  # Protects _client and _current_endpoint_idx
 
     @property
     def endpoint(self) -> str:
@@ -125,7 +125,7 @@ class RpcClient:
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client (thread-safe)"""
         if self._client is None:
-            with self._client_lock:
+            with self._lock:
                 # Double-check after acquiring lock
                 if self._client is None:
                     self._client = httpx.Client(
@@ -135,10 +135,12 @@ class RpcClient:
         return self._client
 
     def _rotate_endpoint(self):
-        """Rotate to next endpoint on failure"""
+        """Rotate to next endpoint on failure (thread-safe)"""
         if len(self._endpoints) > 1:
-            self._current_endpoint_idx = (self._current_endpoint_idx + 1) % len(self._endpoints)
-            logger.info(f"Rotating to RPC endpoint: {self.endpoint}")
+            with self._lock:
+                self._current_endpoint_idx = (self._current_endpoint_idx + 1) % len(self._endpoints)
+                new_endpoint = self._endpoints[self._current_endpoint_idx]
+            logger.info(f"Rotating to RPC endpoint: {new_endpoint}")
 
     def call(
         self,
@@ -519,6 +521,30 @@ class RpcClient:
             )
 
         return None
+
+    def get_transaction(
+        self,
+        signature: str,
+        commitment: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get transaction details including fee
+
+        Args:
+            signature: Transaction signature (base58)
+            commitment: Commitment level
+
+        Returns:
+            Transaction details with meta.fee, or None if not found
+        """
+        params = [
+            signature,
+            {
+                "commitment": commitment or self.commitment,
+                "maxSupportedTransactionVersion": 0,  # Required for versioned txs
+            },
+        ]
+        return self.call("getTransaction", params)
 
     def get_token_largest_accounts(
         self,

@@ -5,7 +5,9 @@ Result type definitions for transactions and quotes
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Union
+
+from ..errors import ErrorCode
 
 
 class TxStatus(Enum):
@@ -27,7 +29,7 @@ class TxResult:
         signature: Transaction signature (base58)
         error: Error message if failed
         recoverable: Whether the error is recoverable (can retry)
-        error_code: Error code for programmatic handling
+        error_code: Error code for programmatic handling (ErrorCode enum)
         fee_lamports: Transaction fee in lamports
         slot: Slot number when confirmed
         block_time: Block timestamp
@@ -37,7 +39,7 @@ class TxResult:
     signature: Optional[str] = None
     error: Optional[str] = None
     recoverable: bool = False
-    error_code: Optional[str] = None
+    error_code: Optional[ErrorCode] = None
     fee_lamports: Optional[int] = None
     slot: Optional[int] = None
     block_time: Optional[int] = None
@@ -94,7 +96,7 @@ class TxResult:
             signature=signature,
             error="Transaction confirmation timeout",
             recoverable=True,
-            error_code="2003",
+            error_code=ErrorCode.TX_CONFIRMATION_FAILED,
             **kwargs
         )
 
@@ -113,6 +115,20 @@ class TxResult:
             sig_display = f"{self.signature[:16]}..." if self.signature else "no signature"
             return f"TxResult(SUCCESS, {sig_display})"
         return f"TxResult({self.status.value}, error={self.error})"
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dictionary"""
+        return {
+            "status": self.status.value,
+            "signature": self.signature,
+            "error": self.error,
+            "recoverable": self.recoverable,
+            "error_code": self.error_code.value if self.error_code else None,
+            "fee_lamports": self.fee_lamports,
+            "slot": self.slot,
+            "block_time": self.block_time,
+            "logs": self.logs,
+        }
 
 
 @dataclass

@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 
 from .infra import RpcClient, RpcClientConfig, TxBuilder, TxBuilderConfig, create_signer, Signer
 from .protocols import ProtocolRegistry
-from .errors import ConfigurationError
 
 
 class DexClient:
@@ -185,9 +184,25 @@ class DexClient:
 
     def close(self):
         """Close client connections and release resources"""
-        # Close swap module (includes 1inch adapters for EVM chains)
+        # Close wallet module (clears web3 instances)
+        if self._wallet is not None:
+            self._wallet.close()
+            self._wallet = None
+
+        # Close market module (closes Uniswap/PancakeSwap adapters)
+        if self._market is not None:
+            self._market.close()
+            self._market = None
+
+        # Close swap module (closes Jupiter/1inch adapters)
         if self._swap is not None:
             self._swap.close()
+            self._swap = None
+
+        # Note: LiquidityModule doesn't have a cleanup close() method
+        # (its close() method is for closing LP positions)
+        self._lp = None
+
         # Close RPC client
         self._rpc.close()
 

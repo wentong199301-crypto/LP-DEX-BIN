@@ -86,7 +86,9 @@ def price_to_bin_id(
     if float(adjusted_price) <= 0:
         return MIN_BIN_ID
 
-    bin_id = int(round(math.log(float(adjusted_price)) / math.log(base)))
+    # Use math.floor() instead of round() - round() can jump to wrong bin at boundaries
+    # floor() ensures we get the bin that contains the price, not the nearest bin
+    bin_id = math.floor(math.log(float(adjusted_price)) / math.log(base))
 
     # Clamp to valid range
     return max(MIN_BIN_ID, min(MAX_BIN_ID, bin_id))

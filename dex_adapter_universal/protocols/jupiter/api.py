@@ -56,7 +56,8 @@ class JupiterAPI:
             raise RuntimeError("httpx is required for Jupiter API")
 
         self._timeout = timeout if timeout is not None else global_config.jupiter.timeout
-        self._max_retries = max_retries if max_retries is not None else global_config.jupiter.max_retries
+        # Note: Retry uses global config.tx.swap_max_retries (default: 5)
+        self._max_retries = max_retries if max_retries is not None else global_config.tx.swap_max_retries
         self._quote_url = quote_url if quote_url is not None else global_config.jupiter.quote_url
         self._swap_url = swap_url if swap_url is not None else global_config.jupiter.swap_url
         self._token_list_url = token_list_url if token_list_url is not None else global_config.jupiter.token_list_url
@@ -105,6 +106,8 @@ class JupiterAPI:
             "asLegacyTransaction": str(as_legacy_transaction).lower(),
         }
 
+        last_error: Optional[Exception] = None
+
         for attempt in range(self._max_retries):
             try:
                 response = client.get(self._quote_url, params=params)
@@ -138,13 +141,14 @@ class JupiterAPI:
 
             except httpx.HTTPStatusError as e:
                 logger.warning(f"Jupiter quote failed (attempt {attempt + 1}): {e}")
+                last_error = e
                 if attempt == self._max_retries - 1:
                     raise
             except Exception as e:
                 logger.error(f"Jupiter quote error: {e}")
                 raise
 
-        raise RuntimeError("Failed to get Jupiter quote")
+        raise RuntimeError(f"Failed to get Jupiter quote after {self._max_retries} attempts") from last_error
 
     def get_swap_transaction(
         self,
@@ -200,6 +204,8 @@ class JupiterAPI:
         if compute_unit_price_micro_lamports:
             swap_request["computeUnitPriceMicroLamports"] = compute_unit_price_micro_lamports
 
+        last_error: Optional[Exception] = None
+
         for attempt in range(self._max_retries):
             try:
                 response = client.post(self._swap_url, json=swap_request)
@@ -214,13 +220,14 @@ class JupiterAPI:
 
             except httpx.HTTPStatusError as e:
                 logger.warning(f"Jupiter swap tx failed (attempt {attempt + 1}): {e}")
+                last_error = e
                 if attempt == self._max_retries - 1:
                     raise
             except Exception as e:
                 logger.error(f"Jupiter swap tx error: {e}")
                 raise
 
-        raise RuntimeError("Failed to get Jupiter swap transaction")
+        raise RuntimeError(f"Failed to get Jupiter swap transaction after {self._max_retries} attempts") from last_error
 
     def get_token_list(self) -> List[Dict[str, Any]]:
         """Get list of tradable tokens"""

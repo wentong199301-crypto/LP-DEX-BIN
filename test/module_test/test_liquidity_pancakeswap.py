@@ -5,6 +5,7 @@ WARNING: These tests execute REAL LP operations and spend REAL tokens!
 
 Tests PancakeSwap V3 LP operations with live BSC RPC.
 Only supports BSC (Chain ID 56).
+All operations have automatic retry logic for transient failures.
 
 Environment Variables Required:
     EVM_PRIVATE_KEY         - EVM private key
@@ -28,9 +29,10 @@ except ImportError:
     pass
 
 
-# Known PancakeSwap V3 WBNB/USDT pool address on BSC for testing
-# 0.25% fee tier pool
-PANCAKESWAP_WBNB_USDT_POOL = "0x1401ff943D08a7E098328C1d3a9d388923B115D2"
+from dex_adapter_universal.types.pool import PANCAKESWAP_POOLS
+
+# Use pool from registry
+PANCAKESWAP_WBNB_USDT_POOL = PANCAKESWAP_POOLS["USDT/WBNB"]
 
 # Minimum balances required for LP tests
 MIN_BNB_BALANCE = Decimal("0.02")
@@ -55,6 +57,41 @@ def create_adapter():
 
     signer = EVMSigner.from_env()
     return PancakeSwapAdapter(chain_id=56, signer=signer)
+
+
+# Import balance helpers from conftest
+from conftest import get_native_balance
+
+
+def test_retry_config_pancakeswap(adapter):
+    """Test that retry configuration is properly set for PancakeSwap operations"""
+    print("Testing retry config (PancakeSwap)...")
+
+    from dex_adapter_universal.config import config
+
+    # Verify retry config values
+    assert config.tx.max_retries >= 1, "max_retries should be at least 1"
+    assert config.tx.retry_delay > 0, "retry_delay should be positive"
+
+    print(f"  max_retries: {config.tx.max_retries}")
+    print(f"  retry_delay: {config.tx.retry_delay}s")
+
+    # Verify LP slippage config
+    assert config.trading.default_lp_slippage_bps >= 0, "LP slippage should be non-negative"
+    print(f"  default_lp_slippage_bps: {config.trading.default_lp_slippage_bps}")
+
+    # Verify adapter has retry helper methods
+    assert hasattr(adapter, '_execute_with_retry'), "adapter should have _execute_with_retry method"
+    assert hasattr(adapter, '_is_recoverable_error'), "adapter should have _is_recoverable_error method"
+    assert hasattr(adapter, '_is_slippage_error'), "adapter should have _is_slippage_error method"
+
+    # Test error classification methods
+    assert adapter._is_recoverable_error("connection timeout"), "timeout should be recoverable"
+    assert adapter._is_recoverable_error("nonce too low"), "nonce error should be recoverable"
+    assert adapter._is_slippage_error("slippage exceeded"), "slippage should be identified"
+    assert adapter._is_slippage_error("price impact too high"), "price impact should be slippage"
+
+    print("  retry config (PancakeSwap): PASSED")
 
 
 def test_list_positions_pancakeswap(adapter):
@@ -106,7 +143,7 @@ def test_open_position_pancakeswap(adapter):
     print("Testing open position (PancakeSwap) (REAL TRANSACTION)...")
 
     # Check balances
-    bnb_balance = adapter.get_native_balance()
+    bnb_balance = get_native_balance(adapter)
     print(f"  BNB balance: {bnb_balance}")
 
     if bnb_balance < MIN_BNB_BALANCE:
@@ -131,7 +168,6 @@ def test_open_position_pancakeswap(adapter):
         pool=pool,
         price_range=PriceRange.percent(0.05),
         amount0=Decimal("0.005"),
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -156,14 +192,13 @@ def test_add_liquidity_pancakeswap(adapter):
     print(f"  Range: {position.price_lower:.6f} - {position.price_upper:.6f}")
 
     # Check balances
-    bnb_balance = adapter.get_native_balance()
+    bnb_balance = get_native_balance(adapter)
     print(f"  BNB balance: {bnb_balance}")
 
     result = adapter.add_liquidity(
         position=position,
         amount0=Decimal("0.002"),  # 0.002 WBNB
         amount1=Decimal("1"),       # 1 USDT
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -188,7 +223,6 @@ def test_remove_liquidity_partial_pancakeswap(adapter):
     result = adapter.remove_liquidity(
         position=position,
         percent=25.0,
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -229,8 +263,8 @@ def test_claim_fees_pancakeswap(adapter):
 
 
 def test_close_position_pancakeswap(adapter):
-    """Test closing a PancakeSwap LP position with real transaction"""
-    print("Testing close position (PancakeSwap) (REAL TRANSACTION)...")
+    """Test closing a single PancakeSwap LP position with real transaction"""
+    print("Testing close single position (PancakeSwap) (REAL TRANSACTION)...")
 
     # Get existing positions
     positions = adapter.get_positions()
@@ -245,7 +279,35 @@ def test_close_position_pancakeswap(adapter):
     print(f"  TX Hash: {result.signature}")
 
     assert result.is_success, f"Close position failed: {result.error}"
-    print("  close position (PancakeSwap): PASSED")
+    print("  close single position (PancakeSwap): PASSED")
+
+
+def test_close_all_positions_pancakeswap(adapter):
+    """Test closing all PancakeSwap LP positions with real transaction"""
+    print("Testing close ALL positions (PancakeSwap) (REAL TRANSACTION)...")
+
+    # Check how many positions exist
+    positions = adapter.get_positions()
+    print(f"  Found {len(positions)} PancakeSwap positions to close")
+
+    if not positions:
+        print("  No positions to close (this is OK)")
+        print("  close ALL positions (PancakeSwap): PASSED")
+        return
+
+    # Close all PancakeSwap positions
+    results = adapter.close_position()
+
+    print(f"  Closed {len(results)} position(s):")
+    for i, result in enumerate(results):
+        status = "OK" if result.is_success else "FAILED"
+        print(f"    [{i+1}] {status}: {result.signature}")
+
+    # Check all succeeded
+    failed = [r for r in results if not r.is_success]
+    assert len(failed) == 0, f"{len(failed)} position(s) failed to close"
+
+    print("  close ALL positions (PancakeSwap): PASSED")
 
 
 def test_full_lifecycle_pancakeswap(adapter):
@@ -253,7 +315,7 @@ def test_full_lifecycle_pancakeswap(adapter):
     print("Testing full lifecycle (PancakeSwap) (REAL TRANSACTIONS)...")
 
     # Check balances
-    bnb_balance = adapter.get_native_balance()
+    bnb_balance = get_native_balance(adapter)
     print(f"  BNB balance: {bnb_balance}")
 
     if bnb_balance < MIN_BNB_BALANCE:
@@ -277,7 +339,6 @@ def test_full_lifecycle_pancakeswap(adapter):
         pool=pool,
         price_range=PriceRange.percent(0.05),
         amount0=Decimal("0.005"),
-        slippage_bps=100,
     )
 
     assert open_result.is_success, f"Open failed: {open_result.error}"
@@ -300,7 +361,6 @@ def test_full_lifecycle_pancakeswap(adapter):
         position=position,
         amount0=Decimal("0.002"),
         amount1=Decimal("1"),
-        slippage_bps=100,
     )
     print(f"    Add status: {add_result.status}")
 
@@ -313,7 +373,6 @@ def test_full_lifecycle_pancakeswap(adapter):
     remove_result = adapter.remove_liquidity(
         position=position,
         percent=25.0,
-        slippage_bps=100,
     )
     print(f"    Remove status: {remove_result.status}")
 
@@ -325,15 +384,16 @@ def test_full_lifecycle_pancakeswap(adapter):
     claim_result = adapter.claim_fees(position)
     print(f"    Claim status: {claim_result.status}")
 
-    # Step 6: Close position
-    print(f"  Step 6: Closing position...")
-    positions = adapter.get_positions()
-    position = positions[0]
+    # Step 6: Close ALL positions
+    print(f"  Step 6: Closing ALL PancakeSwap positions...")
+    close_results = adapter.close_position()
 
-    close_result = adapter.close_position(position)
-
-    print(f"    Closed: {close_result.signature}")
-    assert close_result.is_success, f"Close failed: {close_result.error}"
+    if isinstance(close_results, list):
+        print(f"    Closed {len(close_results)} position(s)")
+        for result in close_results:
+            assert result.is_success, f"Close failed: {result.error}"
+    else:
+        assert close_results.is_success, f"Close failed: {close_results.error}"
 
     print("  full lifecycle (PancakeSwap): PASSED")
 
@@ -362,6 +422,7 @@ def main():
     print()
 
     tests = [
+        test_retry_config_pancakeswap,
         test_list_positions_pancakeswap,
         test_get_pool_pancakeswap,
         test_open_position_pancakeswap,
@@ -369,6 +430,7 @@ def main():
         test_remove_liquidity_partial_pancakeswap,
         test_claim_fees_pancakeswap,
         test_close_position_pancakeswap,
+        test_close_all_positions_pancakeswap,
         test_full_lifecycle_pancakeswap,
     ]
 

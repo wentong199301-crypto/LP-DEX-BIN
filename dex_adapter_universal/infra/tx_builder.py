@@ -59,13 +59,13 @@ class TxBuilderConfig:
         config = TxBuilderConfig(compute_units=400_000, skip_preflight=True)
         builder = TxBuilder(rpc, signer, config=config)
     """
-    compute_units: int = None
-    compute_unit_price: int = None
-    skip_preflight: bool = None
-    preflight_commitment: str = None
-    max_retries: int = None
-    confirmation_timeout: float = None
-    retry_delay: float = None
+    compute_units: Optional[int] = None
+    compute_unit_price: Optional[int] = None
+    skip_preflight: Optional[bool] = None
+    preflight_commitment: Optional[str] = None
+    max_retries: Optional[int] = None
+    confirmation_timeout: Optional[float] = None
+    retry_delay: Optional[float] = None
 
     def __post_init__(self):
         """Apply defaults from global config for any unset values"""
@@ -78,7 +78,7 @@ class TxBuilderConfig:
         if self.preflight_commitment is None:
             self.preflight_commitment = global_config.tx.preflight_commitment
         if self.max_retries is None:
-            self.max_retries = global_config.tx.max_retries
+            self.max_retries = global_config.tx.swap_max_retries
         if self.confirmation_timeout is None:
             self.confirmation_timeout = global_config.tx.confirmation_timeout
         if self.retry_delay is None:
@@ -338,7 +338,11 @@ class TxBuilder:
         wait_confirmation: bool = True,
     ) -> TxResult:
         """
-        Send signed transaction
+        Send signed transaction (single attempt, no retry).
+
+        Note: This method does NOT retry because the signed transaction contains
+        a blockhash that may expire. For retry with fresh blockhash, use
+        build_and_send() which rebuilds the transaction on each retry.
 
         Args:
             signed_tx: Signed transaction bytes
@@ -350,54 +354,53 @@ class TxBuilder:
         """
         skip = skip_preflight if skip_preflight is not None else self._config.skip_preflight
 
-        signature: Optional[str] = None
+        try:
+            signature = self._rpc.send_transaction(
+                signed_tx,
+                skip_preflight=skip,
+                preflight_commitment=self._config.preflight_commitment,
+            )
 
-        for attempt in range(self._config.max_retries):
-            try:
-                signature = self._rpc.send_transaction(
-                    signed_tx,
-                    skip_preflight=skip,
-                    preflight_commitment=self._config.preflight_commitment,
+            logger.info(f"Transaction sent: {signature}")
+
+            if wait_confirmation:
+                confirmed = self._rpc.confirm_transaction(
+                    signature,
+                    commitment=self._config.preflight_commitment,
+                    timeout_seconds=self._config.confirmation_timeout,
                 )
 
-                logger.info(f"Transaction sent: {signature}")
+                if confirmed is True:
+                    # Fetch actual transaction fee
+                    fee_lamports = 0
+                    try:
+                        tx_detail = self._rpc.get_transaction(signature)
+                        if tx_detail and tx_detail.get("meta"):
+                            fee_lamports = tx_detail["meta"].get("fee", 0)
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch tx fee: {e}")
 
-                if wait_confirmation:
-                    confirmed = self._rpc.confirm_transaction(
-                        signature,
-                        commitment=self._config.preflight_commitment,
-                        timeout_seconds=self._config.confirmation_timeout,
-                    )
-
-                    if confirmed is True:
-                        return TxResult.success(signature)
-                    elif confirmed is False:
-                        # Transaction failed on-chain
-                        return TxResult.failed(
-                            "Transaction failed on-chain (check explorer for details)",
-                            signature=signature,
-                        )
-                    else:
-                        # confirmed is None - timeout/dropped
-                        return TxResult.timeout(signature)
-                else:
-                    return TxResult(
-                        status=TxStatus.PENDING,
+                    return TxResult.success(signature, fee_lamports=fee_lamports)
+                elif confirmed is False:
+                    # Transaction failed on-chain
+                    return TxResult.failed(
+                        "Transaction failed on-chain (check explorer for details)",
                         signature=signature,
                     )
+                else:
+                    # confirmed is None - timeout/dropped
+                    return TxResult.timeout(signature)
+            else:
+                return TxResult(
+                    status=TxStatus.PENDING,
+                    signature=signature,
+                )
 
-            except RpcError as e:
-                if e.recoverable and attempt < self._config.max_retries - 1:
-                    logger.warning(f"Send failed (attempt {attempt + 1}), retrying: {e}")
-                    time.sleep(self._config.retry_delay)
-                    continue
-                raise TransactionError.send_failed(str(e))
+        except RpcError as e:
+            raise TransactionError.send_failed(str(e))
 
-            except Exception as e:
-                raise TransactionError.send_failed(str(e))
-
-        # This should only be reached if max_retries is 0 (misconfiguration)
-        raise TransactionError.send_failed("No send attempts made (max_retries=0)")
+        except Exception as e:
+            raise TransactionError.send_failed(str(e))
 
     def simulate(
         self,
@@ -425,7 +428,10 @@ class TxBuilder:
         additional_signers: Optional[List["Keypair"]] = None,
     ) -> TxResult:
         """
-        Build, sign, and send transaction in one call
+        Build, sign, and send transaction with automatic retry.
+
+        On each retry, the transaction is rebuilt with a fresh blockhash to avoid
+        "blockhash not found" errors from expired blockhashes.
 
         Args:
             instructions: List of instructions
@@ -439,30 +445,84 @@ class TxBuilder:
         Returns:
             TxResult
         """
-        # Build unsigned transaction
-        unsigned_tx = self.build(
-            instructions,
-            compute_units=compute_units,
-            compute_unit_price=compute_unit_price,
-        )
+        last_error: Optional[Exception] = None
 
-        # Optional simulation
-        if simulate_first:
-            sim_result = self.simulate(unsigned_tx)
-            if sim_result.get("value", {}).get("err"):
-                error_msg = str(sim_result["value"]["err"])
-                logs = sim_result.get("value", {}).get("logs", [])
-                raise TransactionError.simulation_failed(error_msg, logs)
+        for attempt in range(self._config.max_retries):
+            try:
+                # Build unsigned transaction with FRESH blockhash on each attempt
+                unsigned_tx = self.build(
+                    instructions,
+                    compute_units=compute_units,
+                    compute_unit_price=compute_unit_price,
+                    # Don't pass blockhash - let build() fetch a fresh one
+                )
 
-        # Sign (with additional signers if provided)
-        signed_tx, signature = self.sign(unsigned_tx, additional_signers)
+                # Optional simulation (only on first attempt to save RPC calls)
+                if simulate_first and attempt == 0:
+                    sim_result = self.simulate(unsigned_tx)
+                    if sim_result.get("value", {}).get("err"):
+                        error_msg = str(sim_result["value"]["err"])
+                        logs = sim_result.get("value", {}).get("logs", [])
+                        raise TransactionError.simulation_failed(error_msg, logs)
 
-        # Send
-        return self.send(
-            signed_tx,
-            skip_preflight=skip_preflight,
-            wait_confirmation=wait_confirmation,
-        )
+                # Sign (with additional signers if provided)
+                signed_tx, signature = self.sign(unsigned_tx, additional_signers)
+
+                # Send (single attempt - no internal retry)
+                result = self.send(
+                    signed_tx,
+                    skip_preflight=skip_preflight,
+                    wait_confirmation=wait_confirmation,
+                )
+
+                # If successful or non-recoverable failure, return immediately
+                if result.is_success or not result.recoverable:
+                    return result
+
+                # Timeout or recoverable failure - retry with fresh blockhash
+                if attempt < self._config.max_retries - 1:
+                    logger.warning(
+                        f"Transaction {result.status.value} (attempt {attempt + 1}/{self._config.max_retries}), "
+                        f"retrying with fresh blockhash..."
+                    )
+                    time.sleep(self._config.retry_delay)
+                    continue
+
+                return result
+
+            except TransactionError as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                # Check if error is recoverable (network issues, blockhash expired, etc.)
+                is_recoverable = any(keyword in error_str for keyword in [
+                    "blockhash",
+                    "timeout",
+                    "connection",
+                    "network",
+                    "rate limit",
+                    "too many requests",
+                    "503", "502", "504",
+                ])
+
+                if is_recoverable and attempt < self._config.max_retries - 1:
+                    logger.warning(
+                        f"Recoverable error (attempt {attempt + 1}/{self._config.max_retries}): {e}"
+                    )
+                    time.sleep(self._config.retry_delay)
+                    continue
+
+                # Non-recoverable or max retries reached
+                raise
+
+            except Exception as e:
+                # Unexpected errors - don't retry
+                raise TransactionError.send_failed(str(e))
+
+        # Should not reach here, but handle edge case
+        if last_error:
+            raise last_error
+        raise TransactionError.send_failed("Max retries exceeded")
 
 
 def create_instruction(

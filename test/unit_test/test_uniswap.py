@@ -11,6 +11,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from dex_adapter_universal.types.evm_tokens import ETH_TOKEN_ADDRESSES
+
 
 def test_uniswap_config():
     """Test UniswapConfig dataclass"""
@@ -134,8 +136,6 @@ def test_adapter_import():
 
     # Test class exists and has expected attributes
     assert UniswapAdapter is not None
-    assert hasattr(UniswapAdapter, 'get_balance')
-    assert hasattr(UniswapAdapter, 'get_native_balance')
     assert hasattr(UniswapAdapter, 'close')
 
     # Check adapter name
@@ -244,20 +244,6 @@ def test_adapter_math_methods():
     print("  adapter math methods: PASSED")
 
 
-def test_adapter_balance_methods():
-    """Test adapter has balance methods"""
-    print("Testing adapter balance methods...")
-
-    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
-
-    methods = ['get_balance', 'get_native_balance', 'get_token_balance']
-
-    for method in methods:
-        assert hasattr(UniswapAdapter, method), f"Missing method: {method}"
-
-    print("  adapter balance methods: PASSED")
-
-
 def test_eth_token_resolution():
     """Test ETH token resolution (used by Uniswap)"""
     print("Testing ETH token resolution...")
@@ -266,12 +252,13 @@ def test_eth_token_resolution():
         resolve_token_address,
         get_token_decimals,
         NATIVE_TOKEN_ADDRESS,
+        ETH_TOKEN_ADDRESSES,
     )
 
     # ETH tokens
     assert resolve_token_address("ETH", 1) == NATIVE_TOKEN_ADDRESS
-    assert resolve_token_address("WETH", 1) == "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-    assert resolve_token_address("USDC", 1) == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    assert resolve_token_address("WETH", 1) == ETH_TOKEN_ADDRESSES["WETH"]
+    assert resolve_token_address("USDC", 1) == ETH_TOKEN_ADDRESSES["USDC"]
 
     # Decimals
     assert get_token_decimals("ETH", 1) == 18
@@ -313,16 +300,18 @@ def test_v4_action_encoder():
 
     # Test encoding methods exist and return bytes
     settle_pair = V4ActionEncoder.encode_settle_pair(
-        "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-        "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        ETH_TOKEN_ADDRESSES["WETH"],
+        ETH_TOKEN_ADDRESSES["USDC"]
     )
     assert isinstance(settle_pair, bytes)
     assert len(settle_pair) > 0
 
+    # Use dummy address for recipient (test address, not a real token)
+    dummy_recipient = "0x1234567890123456789012345678901234567890"
     take_pair = V4ActionEncoder.encode_take_pair(
-        "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-        "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-        "0x1234567890123456789012345678901234567890"
+        ETH_TOKEN_ADDRESSES["WETH"],
+        ETH_TOKEN_ADDRESSES["USDC"],
+        dummy_recipient
     )
     assert isinstance(take_pair, bytes)
     assert len(take_pair) > 0
@@ -379,7 +368,6 @@ def main():
         test_adapter_properties,
         test_adapter_liquidity_methods,
         test_adapter_math_methods,
-        test_adapter_balance_methods,
         test_eth_token_resolution,
         test_supported_chains,
         test_v4_action_encoder,

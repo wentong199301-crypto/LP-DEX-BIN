@@ -67,39 +67,33 @@ DISCRIMINATORS = {
     "close_position": bytes([0x7b, 0x86, 0x51, 0x00, 0x31, 0x44, 0x62, 0x62]),
     "claim_fee": bytes([0xa9, 0x20, 0x4f, 0x89, 0x88, 0xe8, 0x46, 0x89]),
     "claim_reward": bytes([0x95, 0x7b, 0x06, 0xb5, 0x87, 0xa6, 0x64, 0x3a]),
-    # V2 instructions (for newer pools/positions)
-    "initialize_position2": bytes([0x8f, 0x13, 0xf2, 0x91, 0xd5, 0x0f, 0x68, 0x73]),
+    # Token-2022 support (when token programs differ)
     "add_liquidity_by_strategy2": bytes([0x03, 0xdd, 0x95, 0xda, 0x6f, 0x8d, 0x76, 0xd5]),
     "remove_liquidity2": bytes([0xe6, 0xd7, 0x52, 0x7f, 0xf1, 0x65, 0xe3, 0x92]),
-    "close_position2": bytes([0xae, 0x5a, 0x23, 0x73, 0xba, 0x28, 0x93, 0xe2]),
     "claim_fee2": bytes([0x70, 0xbf, 0x65, 0xab, 0x1c, 0x90, 0x7f, 0xbb]),
 }
 
 # Anchor account discriminators (sha256("account:<AccountName>")[0:8])
 ACCOUNT_DISCRIMINATORS = {
-    # Position account: sha256("account:Position")[0:8] - used by older positions
-    "position": bytes([0xaa, 0xbc, 0x8f, 0xe4, 0x7a, 0x40, 0xf7, 0xd0]),
-    # PositionV2 account: sha256("account:PositionV2")[0:8] - current version
-    "position_v2": bytes([0x75, 0xb0, 0xd4, 0xc7, 0xf5, 0xb4, 0x85, 0xb6]),
+    # Position account: sha256("account:PositionV2")[0:8]
+    # Note: initialize_position instruction now creates V2 accounts
+    "position": bytes([0x75, 0xb0, 0xd4, 0xc7, 0xf5, 0xb4, 0x85, 0xb6]),
     # LbPair account: sha256("account:LbPair")[0:8]
     "lb_pair": bytes([0x09, 0xf7, 0xab, 0x7f, 0xd2, 0xd2, 0x8d, 0xf1]),
 }
 
-# Position account structure offsets (PositionV2)
-# Based on actual on-chain data analysis:
+# Position account structure offsets (PositionV2 format)
+# Note: initialize_position instruction now creates V2 accounts (program upgrade)
 # - Discriminator: 8 bytes (offset 0)
 # - lb_pair: Pubkey (32 bytes) at offset 8
 # - owner: Pubkey (32 bytes) at offset 40
-# - liquidity_shares: [u128; 490] = 7840 bytes at offset 72
-#   (490 bins max, each share is u128 = 16 bytes)
-# - lower_bin_id: i32 at offset 7912 (72 + 7840)
+# - liquidity_shares: [u128; 70] = 1120 bytes at offset 72
+#   (still max 70 bins per position, but account has V2 layout)
+# - lower_bin_id: i32 at offset 7912 (V2 offset)
 # - upper_bin_id: i32 at offset 7916
-# - last_updated_at: i64 at offset 7920
-# - Total claimed fee amounts and other fields follow
 POSITION_LB_PAIR_OFFSET = 8
 POSITION_OWNER_OFFSET = 40
 POSITION_LIQUIDITY_SHARES_OFFSET = 72
-# Each liquidity share is u128 (16 bytes), max 490 bins per position
-MAX_POSITION_WIDTH = 490
+MAX_POSITION_WIDTH = 70  # Still limited to 70 bins
 POSITION_LOWER_BIN_ID_OFFSET = 7912
 POSITION_UPPER_BIN_ID_OFFSET = 7916

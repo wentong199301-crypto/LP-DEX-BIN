@@ -301,10 +301,11 @@ class PositionNotFound(DexAdapterError):
         self,
         message: str,
         position_id: Optional[str] = None,
+        code: ErrorCode = ErrorCode.POSITION_NOT_FOUND,
     ):
         super().__init__(
             message,
-            ErrorCode.POSITION_NOT_FOUND,
+            code,
             recoverable=False,
             details={"position_id": position_id},
         )
@@ -319,12 +320,11 @@ class PositionNotFound(DexAdapterError):
 
     @classmethod
     def already_closed(cls, position_id: str) -> "PositionNotFound":
-        error = cls(
+        return cls(
             f"Position already closed: {position_id}",
             position_id=position_id,
+            code=ErrorCode.POSITION_ALREADY_CLOSED,
         )
-        error.code = ErrorCode.POSITION_ALREADY_CLOSED
-        return error
 
 
 class TransactionError(DexAdapterError):
@@ -397,8 +397,9 @@ class SignerError(DexAdapterError):
         self,
         message: str,
         code: ErrorCode = ErrorCode.SIGNER_FAILED,
+        recoverable: bool = False,
     ):
-        super().__init__(message, code, recoverable=False)
+        super().__init__(message, code, recoverable=recoverable)
 
     @classmethod
     def not_configured(cls) -> "SignerError":
@@ -413,9 +414,11 @@ class SignerError(DexAdapterError):
 
     @classmethod
     def timeout(cls) -> "SignerError":
-        error = cls("Remote signer timed out", ErrorCode.SIGNER_TIMEOUT)
-        error.recoverable = True
-        return error
+        return cls(
+            "Remote signer timed out",
+            ErrorCode.SIGNER_TIMEOUT,
+            recoverable=True,
+        )
 
 
 class ConfigurationError(DexAdapterError):

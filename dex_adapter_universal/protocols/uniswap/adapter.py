@@ -11,7 +11,7 @@ import logging
 import math
 import time
 from decimal import Decimal
-from typing import Optional, Dict, Any, List, Tuple, Literal
+from typing import Optional, Dict, Any, List, Tuple, Literal, Union
 from enum import Enum
 
 try:
@@ -25,7 +25,7 @@ from ...types.result import TxResult, TxStatus
 from ...types.pool import Pool
 from ...types.position import Position
 from ...types.price import PriceRange, RangeMode
-from ...types.common import Token
+from ...types.common import Token, STABLECOINS
 from ...types.evm_tokens import (
     resolve_token_address,
     get_token_decimals,
@@ -35,8 +35,8 @@ from ...types.evm_tokens import (
     get_wrapped_native_address,
     NATIVE_TOKEN_ADDRESS,
 )
-from ...infra.evm_signer import EVMSigner, create_web3, get_balance
-from ...errors import SignerError, ConfigurationError
+from ...infra.evm_signer import EVMSigner, create_web3
+from ...errors import SignerError, ConfigurationError, ErrorCode
 from ...config import config as global_config
 
 from .api import (
@@ -245,6 +245,41 @@ V3_POSITION_MANAGER_ABI = [
     {
         "inputs": [{"name": "tokenId", "type": "uint256"}],
         "name": "burn",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"name": "data", "type": "bytes[]"}],
+        "name": "multicall",
+        "outputs": [{"name": "results", "type": "bytes[]"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "amountMinimum", "type": "uint256"},
+            {"name": "recipient", "type": "address"},
+        ],
+        "name": "unwrapWETH9",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "token", "type": "address"},
+            {"name": "amountMinimum", "type": "uint256"},
+            {"name": "recipient", "type": "address"},
+        ],
+        "name": "sweepToken",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "refundETH",
         "outputs": [],
         "stateMutability": "payable",
         "type": "function"
@@ -625,6 +660,9 @@ class UniswapAdapter:
         # Initialize web3
         self._web3 = create_web3(self._rpc_url, chain_id)
 
+        # Internal nonce tracker to avoid stale nonce from RPC
+        self._nonce: Optional[int] = None
+
         logger.info(f"Initialized UniswapAdapter for {self.chain_name} ({chain_id})")
 
     @property
@@ -642,6 +680,19 @@ class UniswapAdapter:
     @property
     def pubkey(self) -> Optional[str]:
         return self.address
+
+    def _get_nonce(self) -> int:
+        """Get next nonce, using internal tracker to avoid stale RPC results."""
+        rpc_nonce = self._web3.eth.get_transaction_count(self._signer.address, "pending")
+        if self._nonce is None or rpc_nonce > self._nonce:
+            self._nonce = rpc_nonce
+        nonce = self._nonce
+        self._nonce = nonce + 1
+        return nonce
+
+    def _reset_nonce(self):
+        """Reset nonce tracker (call after errors that may leave nonce inconsistent)."""
+        self._nonce = None
 
     @property
     def web3(self) -> "Web3":
@@ -703,6 +754,44 @@ class UniswapAdapter:
             abi=ERC20_ABI,
         )
 
+    def unwrap_native(self, amount: Decimal) -> str:
+        """
+        Unwrap WETH back to native ETH.
+
+        Args:
+            amount: Amount of WETH to unwrap (UI units, e.g. Decimal("0.01"))
+
+        Returns:
+            Transaction hash
+        """
+        if not self._signer:
+            raise SignerError.missing("Signer required for unwrap")
+
+        weth_address = get_wrapped_native_address(self._chain_id)
+        raw_amount = int(amount * Decimal(10**18))
+
+        weth_abi = [{"constant": False, "inputs": [{"name": "wad", "type": "uint256"}], "name": "withdraw", "outputs": [], "type": "function"}]
+        contract = self._web3.eth.contract(
+            address=self._web3.to_checksum_address(weth_address), abi=weth_abi
+        )
+
+        tx = contract.functions.withdraw(raw_amount).build_transaction({
+            "from": self.address,
+            "value": 0,
+            "gas": 50000,
+            "nonce": self._get_nonce(),
+            "chainId": self._chain_id,
+        })
+
+        self._add_gas_price(tx)
+        raw_tx, tx_hash_hex = self._signer.sign_transaction(tx)
+        self._web3.eth.send_raw_transaction(raw_tx)
+        receipt = self._web3.eth.wait_for_transaction_receipt(bytes.fromhex(tx_hash_hex), timeout=60)
+
+        status = "OK" if receipt["status"] == 1 else "FAILED"
+        logger.info(f"Unwrap {amount} WETH -> ETH: {status} (tx: {tx_hash_hex})")
+        return tx_hash_hex
+
     # =========================================================================
     # Version Detection
     # =========================================================================
@@ -727,52 +816,36 @@ class UniswapAdapter:
         return self.detect_pool_version(pool) == PoolVersion.V4
 
     # =========================================================================
-    # Balance Methods
-    # =========================================================================
-
-    def get_balance(self, token: str) -> Decimal:
-        """Get token balance"""
-        if not self._signer:
-            raise SignerError.not_configured()
-
-        token_address = resolve_token_address(token, self._chain_id)
-        decimals = get_token_decimals(token, self._chain_id)
-
-        raw_balance = get_balance(
-            self._web3,
-            self._signer.address,
-            token_address if not is_native_token(token_address) else None,
-        )
-
-        return Decimal(raw_balance) / Decimal(10 ** decimals)
-
-    def get_native_balance(self) -> Decimal:
-        """Get native token balance (ETH)"""
-        return self.get_balance(get_native_symbol(self._chain_id))
-
-    def get_token_balance(self, token: str) -> Decimal:
-        """Get ERC20 token balance"""
-        return self.get_balance(token)
-
-    # =========================================================================
     # Math Helper Functions
     # =========================================================================
 
     @staticmethod
     def tick_to_price(tick: int, decimals0: int = 18, decimals1: int = 18) -> Decimal:
-        """Convert tick to price"""
-        price = Decimal(str(1.0001 ** tick))
+        """Convert tick to price using full Decimal precision.
+
+        price = 1.0001^tick * 10^(decimals0 - decimals1)
+        """
+        # Use Decimal exponentiation to avoid float precision loss on extreme ticks
+        base = Decimal("1.0001")
+        if tick >= 0:
+            price = base ** tick
+        else:
+            price = Decimal(1) / (base ** (-tick))
         decimal_adjustment = Decimal(10 ** (decimals0 - decimals1))
         return price * decimal_adjustment
 
     @staticmethod
     def price_to_tick(price: Decimal, decimals0: int = 18, decimals1: int = 18) -> int:
-        """Convert price to tick"""
+        """Convert price to tick using full Decimal precision.
+
+        tick = log(price * 10^(decimals1 - decimals0)) / log(1.0001)
+        """
         decimal_adjustment = Decimal(10 ** (decimals1 - decimals0))
-        adjusted_price = float(price * decimal_adjustment)
+        adjusted_price = price * decimal_adjustment
         if adjusted_price <= 0:
             return MIN_TICK
-        tick = int(math.log(adjusted_price) / math.log(1.0001))
+        # Use Decimal.ln() for precision instead of float math.log
+        tick = int(adjusted_price.ln() / Decimal("1.0001").ln())
         return max(MIN_TICK, min(MAX_TICK, tick))
 
     @staticmethod
@@ -795,6 +868,105 @@ class UniswapAdapter:
         if round_up:
             return ((tick + tick_spacing - 1) // tick_spacing) * tick_spacing
         return (tick // tick_spacing) * tick_spacing
+
+    def _get_eth_usd_price(self) -> Optional[Decimal]:
+        """
+        Fetch ETH/USD price from USDC/WETH pool.
+
+        Returns:
+            ETH price in USD, or None if fetch fails
+        """
+        try:
+            # USDC/WETH 0.3% pool on Ethereum mainnet
+            usdc_weth_pool = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
+            pool_contract = self._web3.eth.contract(
+                address=Web3.to_checksum_address(usdc_weth_pool),
+                abi=V3_POOL_ABI,
+            )
+            slot0 = pool_contract.functions.slot0().call()
+            sqrt_price_x96 = slot0[0]
+            # USDC decimals=6, WETH decimals=18
+            # Price = USDC per WETH
+            price = self.sqrt_price_x96_to_price(sqrt_price_x96, 6, 18)
+            if price > 0:
+                # price is USDC/WETH, so ETH price = 1/price
+                return Decimal(1) / price
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to get ETH/USD price: {e}")
+            return None
+
+    def _calculate_tvl(
+        self,
+        pool_address: str,
+        token0_contract,
+        token1_contract,
+        decimals0: int,
+        decimals1: int,
+        price: Decimal,
+        token0_symbol: str = "",
+        token1_symbol: str = "",
+    ) -> Decimal:
+        """
+        Calculate TVL from pool token balances.
+
+        Args:
+            pool_address: Pool contract address
+            token0_contract: Token0 contract instance
+            token1_contract: Token1 contract instance
+            decimals0: Token0 decimals
+            decimals1: Token1 decimals
+            price: Token0 price in Token1 terms
+            token0_symbol: Token0 symbol (for stablecoin detection)
+            token1_symbol: Token1 symbol (for stablecoin detection)
+
+        Returns:
+            TVL in USD
+        """
+        try:
+            pool_addr = Web3.to_checksum_address(pool_address)
+
+            balance0_raw = token0_contract.functions.balanceOf(pool_addr).call()
+            balance1_raw = token1_contract.functions.balanceOf(pool_addr).call()
+
+            balance0 = Decimal(balance0_raw) / Decimal(10 ** decimals0)
+            balance1 = Decimal(balance1_raw) / Decimal(10 ** decimals1)
+
+            # Detect which token is the stablecoin
+            token0_is_stable = token0_symbol.upper() in STABLECOINS
+            token1_is_stable = token1_symbol.upper() in STABLECOINS
+
+            if token0_is_stable and not token1_is_stable:
+                # Token0 is stablecoin: TVL = balance0 + (balance1 * price_of_token1_in_usd)
+                # price = token0/token1, so price_of_token1_in_usd = 1/price
+                if price > 0:
+                    tvl = balance0 + (balance1 / price)
+                else:
+                    tvl = balance0
+            elif token1_is_stable and not token0_is_stable:
+                # Token1 is stablecoin: TVL = (balance0 * price) + balance1
+                tvl = (balance0 * price) + balance1
+            else:
+                # Neither is stablecoin - need USD price for one of them
+                # Calculate TVL in token1 first, then convert to USD
+                tvl_in_token1 = (balance0 * price) + balance1
+
+                # Try to get USD price for token1
+                token1_upper = token1_symbol.upper()
+                if token1_upper in ("WETH", "ETH"):
+                    eth_usd = self._get_eth_usd_price()
+                    if eth_usd:
+                        tvl = tvl_in_token1 * eth_usd
+                    else:
+                        tvl = tvl_in_token1  # Fallback: return in ETH terms
+                else:
+                    # For other non-stablecoin pairs, return value in token1 terms
+                    # (Better than wrong USD value)
+                    tvl = tvl_in_token1
+
+            return tvl
+        except Exception:
+            return Decimal(0)
 
     def _calculate_liquidity(
         self,
@@ -945,6 +1117,18 @@ class UniswapAdapter:
             token0_obj = Token(mint=addr0, symbol=symbol0, decimals=decimals0)
             token1_obj = Token(mint=addr1, symbol=symbol1, decimals=decimals1)
 
+            # Calculate TVL from pool token balances
+            tvl_usd = self._calculate_tvl(
+                pool_address=pool_address,
+                token0_contract=token0_contract,
+                token1_contract=token1_contract,
+                decimals0=decimals0,
+                decimals1=decimals1,
+                price=price,
+                token0_symbol=symbol0,
+                token1_symbol=symbol1,
+            )
+
             return Pool(
                 address=pool_address,
                 dex="uniswap",
@@ -952,6 +1136,7 @@ class UniswapAdapter:
                 token0=token0_obj,
                 token1=token1_obj,
                 price=price,
+                tvl_usd=tvl_usd,
                 fee_rate=Decimal(fee) / Decimal(1_000_000),
                 tick_spacing=tick_spacing,
                 current_tick=current_tick,
@@ -1125,6 +1310,18 @@ class UniswapAdapter:
             token0_obj = Token(mint=token0_addr, symbol=symbol0, decimals=decimals0)
             token1_obj = Token(mint=token1_addr, symbol=symbol1, decimals=decimals1)
 
+            # Calculate TVL from pool token balances
+            tvl_usd = self._calculate_tvl(
+                pool_address=pool_address,
+                token0_contract=token0_contract,
+                token1_contract=token1_contract,
+                decimals0=decimals0,
+                decimals1=decimals1,
+                price=price,
+                token0_symbol=symbol0,
+                token1_symbol=symbol1,
+            )
+
             return Pool(
                 address=pool_address,
                 dex="uniswap",
@@ -1132,6 +1329,7 @@ class UniswapAdapter:
                 token0=token0_obj,
                 token1=token1_obj,
                 price=price,
+                tvl_usd=tvl_usd,
                 fee_rate=Decimal(fee) / Decimal(1_000_000),
                 tick_spacing=tick_spacing,
                 current_tick=current_tick,
@@ -1359,9 +1557,13 @@ class UniswapAdapter:
         price_range: PriceRange,
         amount0: Optional[Decimal] = None,
         amount1: Optional[Decimal] = None,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """Open a new liquidity position (routes to V3 or V4 based on pool)"""
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = global_config.trading.default_lp_slippage_bps
+
         if self._is_v4_pool(pool):
             return self._open_position_v4(pool, price_range, amount0, amount1, slippage_bps)
         return self._open_position_v3(pool, price_range, amount0, amount1, slippage_bps)
@@ -1389,9 +1591,12 @@ class UniswapAdapter:
             raw_amount0 = int((amount0 or Decimal(0)) * Decimal(10 ** decimals0))
             raw_amount1 = int((amount1 or Decimal(0)) * Decimal(10 ** decimals1))
 
-            slippage_factor = Decimal(10000 - slippage_bps) / Decimal(10000)
-            min_amount0 = int(Decimal(raw_amount0) * slippage_factor)
-            min_amount1 = int(Decimal(raw_amount1) * slippage_factor)
+            # Set min amounts to 0: Uniswap V3 mint computes liquidity as
+            # min(liq_from_amount0, liq_from_amount1) for in-range positions,
+            # so actual deposited amounts can be much less than desired.
+            # Deadline provides frontrun protection.
+            min_amount0 = 0
+            min_amount1 = 0
 
             token0_addr = pool.token0.mint
             token1_addr = pool.token1.mint
@@ -1417,35 +1622,50 @@ class UniswapAdapter:
                 if approval and not approval.is_success:
                     return approval
 
-            deadline = int(time.time()) + 1200
+            fee = pool.metadata.get("fee", 3000)
 
-            mint_params = (
-                Web3.to_checksum_address(token0_addr),
-                Web3.to_checksum_address(token1_addr),
-                pool.metadata.get("fee", 3000),
-                tick_lower,
-                tick_upper,
-                raw_amount0,
-                raw_amount1,
-                min_amount0,
-                min_amount1,
-                Web3.to_checksum_address(self._signer.address),
-                deadline,
-            )
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                mint_params = (
+                    Web3.to_checksum_address(token0_addr),
+                    Web3.to_checksum_address(token1_addr),
+                    fee,
+                    tick_lower,
+                    tick_upper,
+                    raw_amount0,
+                    raw_amount1,
+                    min_amount0,
+                    min_amount1,
+                    Web3.to_checksum_address(self._signer.address),
+                    deadline,
+                )
 
-            pm = self._get_v3_position_manager()
-            tx = pm.functions.mint(mint_params).build_transaction({
-                "from": self._signer.address,
-                "value": native_value,
-                "gas": 500000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
+                pm = self._get_v3_position_manager()
 
-            self._add_gas_price(tx)
+                if native_value > 0:
+                    # Use multicall to batch mint + refundETH so unused ETH is returned
+                    mint_data = pm.functions.mint(mint_params)._encode_transaction_data()
+                    refund_data = pm.functions.refundETH()._encode_transaction_data()
+                    call_bytes = []
+                    for c in [mint_data, refund_data]:
+                        call_bytes.append(bytes.fromhex(c[2:]) if isinstance(c, str) else c)
+                    return pm.functions.multicall(call_bytes).build_transaction({
+                        "from": self._signer.address,
+                        "value": native_value,
+                        "gas": global_config.evm.lp_gas_limit,
+                        "nonce": self._get_nonce(),
+                        "chainId": self._chain_id,
+                    })
+                else:
+                    return pm.functions.mint(mint_params).build_transaction({
+                        "from": self._signer.address,
+                        "value": 0,
+                        "gas": global_config.evm.lp_gas_limit,
+                        "nonce": self._get_nonce(),
+                        "chainId": self._chain_id,
+                    })
 
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("open_position_v3", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to open V3 position: {e}")
@@ -1533,21 +1753,18 @@ class UniswapAdapter:
                 if approval and not approval.is_success:
                     return approval
 
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                pm = self._get_v4_position_manager()
+                return pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
+                    "from": self._signer.address,
+                    "value": native_value,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
 
-            pm = self._get_v4_position_manager()
-            tx = pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
-                "from": self._signer.address,
-                "value": native_value,
-                "gas": 600000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
-
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("open_position_v4", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to open V4 position: {e}")
@@ -1558,9 +1775,13 @@ class UniswapAdapter:
         position: Position,
         amount0: Decimal,
         amount1: Decimal,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """Add liquidity to existing position"""
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = global_config.trading.default_lp_slippage_bps
+
         if self._is_v4_pool(position.pool):
             return self._add_liquidity_v4(position, amount0, amount1, slippage_bps)
         return self._add_liquidity_v3(position, amount0, amount1, slippage_bps)
@@ -1635,21 +1856,18 @@ class UniswapAdapter:
                 if approval and not approval.is_success:
                     return approval
 
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                pm = self._get_v4_position_manager()
+                return pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
+                    "from": self._signer.address,
+                    "value": native_value,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
 
-            pm = self._get_v4_position_manager()
-            tx = pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
-                "from": self._signer.address,
-                "value": native_value,
-                "gas": 500000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
-
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("add_liquidity_v4", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to add V4 liquidity: {e}")
@@ -1703,23 +1921,20 @@ class UniswapAdapter:
                 if approval and not approval.is_success:
                     return approval
 
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                increase_params = (token_id, raw_amount0, raw_amount1, min_amount0, min_amount1, deadline)
 
-            increase_params = (token_id, raw_amount0, raw_amount1, min_amount0, min_amount1, deadline)
+                pm = self._get_v3_position_manager()
+                return pm.functions.increaseLiquidity(increase_params).build_transaction({
+                    "from": self._signer.address,
+                    "value": native_value,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
 
-            pm = self._get_v3_position_manager()
-            tx = pm.functions.increaseLiquidity(increase_params).build_transaction({
-                "from": self._signer.address,
-                "value": native_value,
-                "gas": 400000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
-
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("add_liquidity_v3", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to add liquidity: {e}")
@@ -1729,9 +1944,13 @@ class UniswapAdapter:
         self,
         position: Position,
         percent: float = 100.0,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """Remove liquidity from position"""
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = global_config.trading.default_lp_slippage_bps
+
         if self._is_v4_pool(position.pool):
             return self._remove_liquidity_v4(position, percent, slippage_bps)
         return self._remove_liquidity_v3(position, percent, slippage_bps)
@@ -1755,23 +1974,20 @@ class UniswapAdapter:
             amount0_min = int(expected_amount0 * slippage_factor * Decimal(10 ** position.pool.token0.decimals))
             amount1_min = int(expected_amount1 * slippage_factor * Decimal(10 ** position.pool.token1.decimals))
 
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                decrease_params = (token_id, liquidity_to_remove, amount0_min, amount1_min, deadline)
 
-            decrease_params = (token_id, liquidity_to_remove, amount0_min, amount1_min, deadline)
+                pm = self._get_v3_position_manager()
+                return pm.functions.decreaseLiquidity(decrease_params).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
 
-            pm = self._get_v3_position_manager()
-            tx = pm.functions.decreaseLiquidity(decrease_params).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 300000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
-
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("remove_liquidity_v3", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to remove liquidity: {e}")
@@ -1818,21 +2034,18 @@ class UniswapAdapter:
 
             unlock_data = V4ActionEncoder.build_unlock_data(actions, params)
 
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                pm = self._get_v4_position_manager()
+                return pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
 
-            pm = self._get_v4_position_manager()
-            tx = pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 400000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
-
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("remove_liquidity_v4", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to remove V4 liquidity: {e}")
@@ -1853,26 +2066,24 @@ class UniswapAdapter:
             token_id = int(position.id)
             max_uint128 = 2**128 - 1
 
-            collect_params = (
-                token_id,
-                Web3.to_checksum_address(self._signer.address),
-                max_uint128,
-                max_uint128,
-            )
+            def build_tx():
+                collect_params = (
+                    token_id,
+                    Web3.to_checksum_address(self._signer.address),
+                    max_uint128,
+                    max_uint128,
+                )
 
-            pm = self._get_v3_position_manager()
-            tx = pm.functions.collect(collect_params).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 200000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
+                pm = self._get_v3_position_manager()
+                return pm.functions.collect(collect_params).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
 
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("claim_fees_v3", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to claim fees: {e}")
@@ -1912,62 +2123,149 @@ class UniswapAdapter:
 
             unlock_data = V4ActionEncoder.build_unlock_data(actions, params)
 
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                pm = self._get_v4_position_manager()
+                return pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
 
-            pm = self._get_v4_position_manager()
-            tx = pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 300000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
-
-            self._add_gas_price(tx)
-
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return self._execute_with_retry("claim_fees_v4", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to claim V4 fees: {e}")
             return TxResult.failed(str(e))
 
-    def close_position(self, position: Position) -> TxResult:
-        """Close position (remove all liquidity, collect fees, burn NFT)"""
+    def close_position(
+        self,
+        position: Optional[Position] = None,
+    ) -> Union[TxResult, List[TxResult]]:
+        """
+        Close position(s) (remove all liquidity, collect fees, burn NFT)
+
+        Args:
+            position: Position to close. If None, closes all positions.
+
+        Returns:
+            TxResult for single position, List[TxResult] for all positions
+
+        Examples:
+            # Close a specific position
+            result = adapter.close_position(position)
+
+            # Close all positions
+            results = adapter.close_position()
+        """
+        # If no position provided, close all positions
+        if position is None:
+            positions = self.get_positions()
+            if not positions:
+                logger.info("No positions to close")
+                return []
+
+            results = []
+            for pos in positions:
+                logger.info(f"Closing position {pos.id}...")
+                try:
+                    if self._is_v4_pool(pos.pool):
+                        result = self._close_position_v4(pos)
+                    else:
+                        result = self._close_position_v3(pos)
+                    results.append(result)
+                    if result.is_success:
+                        logger.info(f"  Closed: {result.signature}")
+                    else:
+                        logger.warning(f"  Failed: {result.error}")
+                except Exception as e:
+                    logger.error(f"  Error closing position {pos.id}: {e}")
+                    results.append(TxResult.failed(str(e)))
+            return results
+
         if self._is_v4_pool(position.pool):
             return self._close_position_v4(position)
         return self._close_position_v3(position)
 
     def _close_position_v3(self, position: Position) -> TxResult:
-        """Close V3 position"""
+        """Close V3 position using multicall to batch all operations into a single tx.
+
+        Batches: decreaseLiquidity + collect + (unwrapWETH9 + sweepToken | nothing) + burn
+        """
         if not self._signer:
             raise SignerError.not_configured()
 
         try:
             token_id = int(position.id)
-
-            if position.liquidity > 0:
-                remove_result = self._remove_liquidity_v3(position, 100.0, 50)
-                if not remove_result.is_success:
-                    return remove_result
-
-            collect_result = self._claim_fees_v3(position)
-            if not collect_result.is_success:
-                logger.warning(f"Collect failed: {collect_result.error}")
-
+            max_uint128 = 2**128 - 1
             pm = self._get_v3_position_manager()
-            tx = pm.functions.burn(token_id).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 100000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
+            wallet = Web3.to_checksum_address(self._signer.address)
 
-            self._add_gas_price(tx)
+            wrapped_native = get_wrapped_native_address(self._chain_id)
+            token0_addr = position.pool.token0.mint
+            token1_addr = position.pool.token1.mint
+            token0_is_weth = token0_addr.lower() == wrapped_native.lower()
+            token1_is_weth = token1_addr.lower() == wrapped_native.lower()
+            has_weth = token0_is_weth or token1_is_weth
 
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                calls = []
+
+                # 1. Decrease all liquidity
+                if position.liquidity > 0:
+                    calls.append(
+                        pm.functions.decreaseLiquidity(
+                            (token_id, position.liquidity, 0, 0, deadline)
+                        )._encode_transaction_data()
+                    )
+
+                # 2. Collect tokens
+                if has_weth:
+                    # Collect to Position Manager contract (address(0)) so it can unwrap
+                    collect_recipient = "0x0000000000000000000000000000000000000000"
+                else:
+                    collect_recipient = wallet
+
+                calls.append(
+                    pm.functions.collect(
+                        (token_id, Web3.to_checksum_address(collect_recipient), max_uint128, max_uint128)
+                    )._encode_transaction_data()
+                )
+
+                # 3. If WETH involved: unwrap + sweep the other token
+                if has_weth:
+                    calls.append(
+                        pm.functions.unwrapWETH9(0, wallet)._encode_transaction_data()
+                    )
+                    other_token = token1_addr if token0_is_weth else token0_addr
+                    calls.append(
+                        pm.functions.sweepToken(
+                            Web3.to_checksum_address(other_token), 0, wallet
+                        )._encode_transaction_data()
+                    )
+
+                # 4. Burn NFT
+                calls.append(
+                    pm.functions.burn(token_id)._encode_transaction_data()
+                )
+
+                # Convert hex strings to bytes for multicall
+                call_bytes = []
+                for c in calls:
+                    call_bytes.append(bytes.fromhex(c[2:]) if isinstance(c, str) else c)
+
+                return pm.functions.multicall(call_bytes).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
+
+            return self._execute_with_retry("close_position_v3", build_tx)
 
         except Exception as e:
             logger.error(f"Failed to close position: {e}")
@@ -2031,21 +2329,38 @@ class UniswapAdapter:
 
             unlock_data = V4ActionEncoder.build_unlock_data(actions, params)
 
-            deadline = int(time.time()) + 1200
+            def build_tx():
+                deadline = int(time.time()) + global_config.evm.tx_deadline_seconds
+                pm = self._get_v4_position_manager()
+                return pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
+                    "from": self._signer.address,
+                    "value": 0,
+                    "gas": global_config.evm.lp_gas_limit,
+                    "nonce": self._get_nonce(),
+                    "chainId": self._chain_id,
+                })
 
-            pm = self._get_v4_position_manager()
-            tx = pm.functions.modifyLiquidities(unlock_data, deadline).build_transaction({
-                "from": self._signer.address,
-                "value": 0,
-                "gas": 500000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
-                "chainId": self._chain_id,
-            })
+            v4_result = self._execute_with_retry("close_position_v4", build_tx)
+            if not v4_result.is_success:
+                return v4_result
 
-            self._add_gas_price(tx)
+            # Unwrap WETH to native ETH if either token is wrapped native.
+            # Skip redundant balanceOf check — unwrap directly based on known position.
+            wrapped_native = get_wrapped_native_address(self._chain_id)
+            if pool.token0.mint.lower() == wrapped_native.lower() or pool.token1.mint.lower() == wrapped_native.lower():
+                try:
+                    weth_contract = self._get_token_contract(wrapped_native)
+                    weth_balance_raw = weth_contract.functions.balanceOf(
+                        Web3.to_checksum_address(self._signer.address)
+                    ).call()
+                    if weth_balance_raw > 0:
+                        weth_balance = Decimal(weth_balance_raw) / Decimal(10**18)
+                        logger.info(f"Unwrapping {weth_balance} WETH -> ETH...")
+                        self.unwrap_native(weth_balance)
+                except Exception as e:
+                    logger.warning(f"Failed to unwrap WETH after V4 close: {e}")
 
-            result = self._signer.sign_and_send(self._web3, tx, wait_for_receipt=True)
-            return self._result_to_tx_result(result)
+            return v4_result
 
         except Exception as e:
             logger.error(f"Failed to close V4 position: {e}")
@@ -2054,6 +2369,27 @@ class UniswapAdapter:
     # =========================================================================
     # Helper Methods
     # =========================================================================
+
+    def _unwrap_if_native(self, position: Position):
+        """Unwrap WETH to native ETH if either pool token is wrapped native"""
+        wrapped_native = get_wrapped_native_address(self._chain_id)
+        token0_is_wrapped = position.pool.token0.mint.lower() == wrapped_native.lower()
+        token1_is_wrapped = position.pool.token1.mint.lower() == wrapped_native.lower()
+
+        if token0_is_wrapped or token1_is_wrapped:
+            try:
+                weth_contract = self._get_token_contract(wrapped_native)
+                weth_balance_raw = weth_contract.functions.balanceOf(
+                    Web3.to_checksum_address(self._signer.address)
+                ).call()
+
+                if weth_balance_raw > 0:
+                    weth_balance = Decimal(weth_balance_raw) / Decimal(10**18)
+                    logger.info(f"Unwrapping {weth_balance} WETH -> ETH...")
+                    self.unwrap_native(weth_balance)
+                    logger.info("Unwrap complete")
+            except Exception as e:
+                logger.warning(f"Failed to unwrap WETH after close: {e}")
 
     def _price_range_to_ticks(self, pool: Pool, price_range: PriceRange) -> Tuple[int, int]:
         """Convert price range to ticks"""
@@ -2123,8 +2459,8 @@ class UniswapAdapter:
                 2**256 - 1,
             ).build_transaction({
                 "from": self._signer.address,
-                "gas": 100000,
-                "nonce": self._web3.eth.get_transaction_count(self._signer.address),
+                "gas": 70000,
+                "nonce": self._get_nonce(),
                 "chainId": self._chain_id,
             })
 
@@ -2141,7 +2477,7 @@ class UniswapAdapter:
 
     def _add_gas_price(self, tx: Dict[str, Any]):
         """Add EIP-1559 gas price with minimum priority fee from config
-        
+
         Note: web3 v7's build_transaction may auto-add gas params.
         We explicitly set EIP-1559 params and remove legacy gasPrice.
         """
@@ -2150,11 +2486,122 @@ class UniswapAdapter:
         # Use configurable priority fee (default 0.1 gwei for minimum cost)
         priority_fee_gwei = global_config.uniswap.priority_fee_gwei
         max_priority_fee = self._web3.to_wei(priority_fee_gwei, "gwei")
-        max_fee = int(base_fee * 2) + max_priority_fee
+        max_fee = int(base_fee * global_config.uniswap.base_fee_multiplier) + max_priority_fee
         tx["maxFeePerGas"] = max_fee
         tx["maxPriorityFeePerGas"] = max_priority_fee
         # Remove legacy gasPrice if present (web3 v7 compatibility)
         tx.pop("gasPrice", None)
+
+    def _is_recoverable_error(self, error_str: str) -> bool:
+        """Check if error is recoverable (network/timeout issues)"""
+        error_lower = error_str.lower()
+        recoverable_keywords = [
+            "timeout", "connection", "network", "rate limit",
+            "too many requests", "503", "502", "504",
+            "temporarily unavailable", "service unavailable",
+            "econnreset", "enotfound", "etimedout",
+            "socket hang up", "request failed", "nonce too low",
+            "replacement transaction underpriced",
+        ]
+        return any(keyword in error_lower for keyword in recoverable_keywords)
+
+    def _is_slippage_error(self, error_str: str) -> bool:
+        """Check if error is slippage-related"""
+        error_lower = error_str.lower()
+        slippage_keywords = [
+            "slippage", "price moved", "insufficient output",
+            "price impact", "price change", "amount out less than minimum",
+            "exceeds slippage", "price slippage", "too little received",
+        ]
+        return any(keyword in error_lower for keyword in slippage_keywords)
+
+    def _execute_with_retry(
+        self,
+        operation_name: str,
+        tx_builder: callable,
+        max_retries: Optional[int] = None,
+        retry_delay: Optional[float] = None,
+    ) -> TxResult:
+        """
+        Execute a transaction with automatic retry for recoverable errors.
+
+        Args:
+            operation_name: Name for logging
+            tx_builder: Callable that builds and returns the transaction dict
+            max_retries: Max retry attempts (defaults to config.tx.lp_max_retries)
+            retry_delay: Base delay between retries (defaults to config.tx.retry_delay)
+
+        Returns:
+            TxResult
+        """
+        max_retries = max_retries if max_retries is not None else global_config.tx.lp_max_retries
+        retry_delay = retry_delay if retry_delay is not None else global_config.tx.retry_delay
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                # Build fresh transaction (gets updated nonce)
+                tx = tx_builder()
+
+                # Add gas price
+                self._add_gas_price(tx)
+
+                # Sign and send
+                result = self._signer.sign_and_send(
+                    self._web3,
+                    tx,
+                    wait_for_receipt=True,
+                )
+
+                tx_result = self._result_to_tx_result(result)
+
+                if tx_result.is_success:
+                    if attempt > 0:
+                        logger.info(f"{operation_name} succeeded after {attempt + 1} attempts")
+                    return tx_result
+
+                # Check if recoverable
+                if result.get("error"):
+                    error_str = str(result.get("error", ""))
+                    if self._is_slippage_error(error_str) and attempt < max_retries - 1:
+                        logger.warning(f"{operation_name} slippage error (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+                    if self._is_recoverable_error(error_str) and attempt < max_retries - 1:
+                        logger.warning(f"{operation_name} recoverable error (attempt {attempt + 1}/{max_retries}): {error_str}")
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+
+                return tx_result
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                self._reset_nonce()  # Reset nonce tracker on any error
+
+                if self._is_slippage_error(error_str):
+                    logger.warning(f"{operation_name} slippage error (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    return TxResult.failed(
+                        f"Slippage exceeded after {max_retries} attempts: {e}",
+                        recoverable=True,
+                        error_code=ErrorCode.SLIPPAGE_EXCEEDED,
+                    )
+
+                if self._is_recoverable_error(error_str) and attempt < max_retries - 1:
+                    logger.warning(f"{operation_name} recoverable error (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+
+                logger.error(f"{operation_name} failed: {e}")
+                return TxResult.failed(str(e), recoverable=self._is_recoverable_error(error_str))
+
+        error_msg = f"Max retries ({max_retries}) exceeded for {operation_name}"
+        if last_error:
+            error_msg += f". Last error: {last_error}"
+        return TxResult.failed(error_msg, recoverable=True)
 
     def _result_to_tx_result(self, result: Dict[str, Any]) -> TxResult:
         """Convert signer result to TxResult"""

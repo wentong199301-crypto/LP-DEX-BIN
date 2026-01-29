@@ -4,7 +4,14 @@ Common type definitions
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Union
+from typing import FrozenSet, Union
+
+
+# Centralized stablecoin symbols for TVL calculation
+# Used across all protocol adapters for consistent stablecoin detection
+STABLECOINS: FrozenSet[str] = frozenset({
+    "USDT", "USDC", "DAI", "BUSD", "TUSD", "FRAX", "USD1",
+})
 
 
 @dataclass(frozen=True)
@@ -32,7 +39,9 @@ class Token:
     @property
     def is_native_sol(self) -> bool:
         """Check if this is native SOL (wrapped)"""
-        return self.mint == "So11111111111111111111111111111111111111112"
+        # Import here to avoid circular import
+        from .solana_tokens import SOLANA_TOKEN_MINTS
+        return self.mint == SOLANA_TOKEN_MINTS["SOL"]
 
     def ui_amount(self, raw_amount: int) -> Decimal:
         """
@@ -63,23 +72,28 @@ class Token:
 
 
 # Common token constants
+# NOTE: These are duplicated from solana_tokens.py for backwards compatibility
+# and to avoid circular imports. The authoritative source is solana_tokens.py.
+# For new code, use: from dex_adapter_universal.types.solana_tokens import SOLANA_TOKENS
+from .solana_tokens import SOLANA_TOKEN_MINTS, SOLANA_TOKEN_DECIMALS
+
 WRAPPED_SOL = Token(
-    mint="So11111111111111111111111111111111111111112",
+    mint=SOLANA_TOKEN_MINTS["SOL"],
     symbol="SOL",
-    decimals=9,
+    decimals=SOLANA_TOKEN_DECIMALS[SOLANA_TOKEN_MINTS["SOL"]],
     name="Wrapped SOL"
 )
 
 USDC = Token(
-    mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    mint=SOLANA_TOKEN_MINTS["USDC"],
     symbol="USDC",
-    decimals=6,
+    decimals=SOLANA_TOKEN_DECIMALS[SOLANA_TOKEN_MINTS["USDC"]],
     name="USD Coin"
 )
 
 USDT = Token(
-    mint="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    mint=SOLANA_TOKEN_MINTS["USDT"],
     symbol="USDT",
-    decimals=6,
+    decimals=SOLANA_TOKEN_DECIMALS[SOLANA_TOKEN_MINTS["USDT"]],
     name="Tether USD"
 )

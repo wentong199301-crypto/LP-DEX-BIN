@@ -4,6 +4,7 @@ Raydium Liquidity Module Integration Tests
 WARNING: These tests execute REAL LP operations and spend REAL tokens!
 
 Tests Raydium CLMM LP operations with live Solana RPC.
+All operations have automatic retry logic for transient failures.
 """
 
 import sys
@@ -15,15 +16,47 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from conftest import create_client, skip_if_no_config
+from dex_adapter_universal.types.pool import RAYDIUM_POOLS
 
 
-# Known Raydium CLMM SOL/USDC pool address for testing
-# Token0=SOL, Token1=USDC
-RAYDIUM_SOL_USDC_POOL = "2QdhepnKRTLjjSqPL1PtKNwqrUkoLee5Gqs8bvZhRdMv"
+# Use pool from registry
+RAYDIUM_SOL_USDC_POOL = RAYDIUM_POOLS["SOL/USDC"]
 
 # Minimum balances required for LP tests
 MIN_SOL_BALANCE = Decimal("0.03")
 MIN_USDC_BALANCE = Decimal("2")
+
+
+def test_retry_config_raydium(client):
+    """Test that retry configuration is properly set for Raydium operations"""
+    print("Testing retry config (Raydium)...")
+
+    from dex_adapter_universal.config import config
+    from dex_adapter_universal.infra.retry import execute_with_retry, classify_error
+
+    # Verify retry config values
+    assert config.tx.max_retries >= 1, "max_retries should be at least 1"
+    assert config.tx.retry_delay > 0, "retry_delay should be positive"
+
+    print(f"  max_retries: {config.tx.max_retries}")
+    print(f"  retry_delay: {config.tx.retry_delay}s")
+
+    # Verify LP slippage config
+    assert config.trading.default_lp_slippage_bps >= 0, "LP slippage should be non-negative"
+    print(f"  default_lp_slippage_bps: {config.trading.default_lp_slippage_bps}")
+
+    # Verify retry helper is importable and works
+    assert callable(execute_with_retry), "execute_with_retry should be callable"
+    assert callable(classify_error), "classify_error should be callable"
+
+    # Test error classification
+    is_recoverable, is_slippage, error_code = classify_error(Exception("blockhash not found"))
+    assert is_recoverable, "blockhash error should be recoverable"
+
+    is_recoverable, is_slippage, error_code = classify_error(Exception("price moved too much"))
+    assert is_slippage, "price moved should be slippage"
+
+    print("  retry config (Raydium): PASSED")
 
 
 def test_list_all_positions(client):
@@ -84,7 +117,6 @@ def test_open_position_raydium(client):
         pool=pool,
         price_range=PriceRange.percent(0.02),
         amount_usd=Decimal("2"),
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -115,7 +147,6 @@ def test_open_position_one_tick_raydium(client):
         pool=pool,
         price_range=PriceRange.one_tick(),
         amount_usd=Decimal("2"),
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -154,7 +185,6 @@ def test_add_liquidity_raydium(client):
         position=position,
         amount0=Decimal("0.002"),  # 0.002 SOL
         amount1=Decimal("0.2"),    # 0.2 USDC
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -184,7 +214,6 @@ def test_remove_liquidity_partial_raydium(client):
     result = client.lp.remove(
         position=position,
         percent=25.0,
-        slippage_bps=100,
     )
 
     print(f"  Status: {result.status}")
@@ -251,8 +280,8 @@ def test_claim_fees_any(client):
 
 
 def test_close_position_raydium(client):
-    """Test closing a Raydium LP position with real transaction"""
-    print("Testing close position (Raydium) (REAL TRANSACTION)...")
+    """Test closing a single Raydium LP position with real transaction"""
+    print("Testing close single position (Raydium) (REAL TRANSACTION)...")
 
     # Get existing Raydium positions
     positions = client.lp.positions(dex="raydium")
@@ -267,7 +296,35 @@ def test_close_position_raydium(client):
     print(f"  Signature: {result.signature}")
 
     assert result.is_success, f"Close position failed: {result.error}"
-    print("  close position (Raydium): PASSED")
+    print("  close single position (Raydium): PASSED")
+
+
+def test_close_all_positions_raydium(client):
+    """Test closing all Raydium LP positions with real transaction"""
+    print("Testing close ALL positions (Raydium) (REAL TRANSACTION)...")
+
+    # Check how many positions exist
+    positions = client.lp.positions(dex="raydium")
+    print(f"  Found {len(positions)} Raydium positions to close")
+
+    if not positions:
+        print("  No positions to close (this is OK)")
+        print("  close ALL positions (Raydium): PASSED")
+        return
+
+    # Close all Raydium positions
+    results = client.lp.close(dex="raydium")
+
+    print(f"  Closed {len(results)} position(s):")
+    for i, result in enumerate(results):
+        status = "OK" if result.is_success else "FAILED"
+        print(f"    [{i+1}] {status}: {result.signature}")
+
+    # Check all succeeded
+    failed = [r for r in results if not r.is_success]
+    assert len(failed) == 0, f"{len(failed)} position(s) failed to close"
+
+    print("  close ALL positions (Raydium): PASSED")
 
 
 def test_full_lifecycle_raydium(client):
@@ -293,7 +350,6 @@ def test_full_lifecycle_raydium(client):
         pool=pool,
         price_range=PriceRange.percent(0.02),
         amount_usd=Decimal("2"),
-        slippage_bps=100,
     )
 
     assert open_result.is_success, f"Open failed: {open_result.error}"
@@ -323,12 +379,17 @@ def test_full_lifecycle_raydium(client):
     claim_result = client.lp.claim(position)
     print(f"    Claim status: {claim_result.status}")
 
-    # Step 4: Close position
-    print(f"  Step 4: Closing position...")
-    close_result = client.lp.close(position)
+    # Step 4: Close ALL Raydium positions
+    print(f"  Step 4: Closing ALL Raydium positions...")
+    close_results = client.lp.close(dex="raydium")
 
-    print(f"    Closed: {close_result.signature}")
-    assert close_result.is_success, f"Close failed: {close_result.error}"
+    if isinstance(close_results, list):
+        print(f"    Closed {len(close_results)} position(s)")
+        for result in close_results:
+            assert result.is_success, f"Close failed: {result.error}"
+    else:
+        # Single result (shouldn't happen with dex= but handle it)
+        assert close_results.is_success, f"Close failed: {close_results.error}"
 
     print("  full lifecycle (Raydium): PASSED")
 
@@ -355,6 +416,7 @@ def main():
     print()
 
     tests = [
+        test_retry_config_raydium,
         test_list_all_positions,
         test_list_positions_raydium,
         test_open_position_raydium,
@@ -364,6 +426,7 @@ def main():
         test_claim_fees_raydium,
         test_claim_fees_any,
         test_close_position_raydium,
+        test_close_all_positions_raydium,
         test_full_lifecycle_raydium,
     ]
 

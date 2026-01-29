@@ -11,6 +11,7 @@ Environment Variables:
 
 import os
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -118,3 +119,126 @@ def client():
     if skip_msg:
         pytest.skip(skip_msg)
     return create_client()
+
+
+def skip_if_no_evm_config():
+    """Check if EVM config is available, return skip message if not"""
+    if not os.getenv("EVM_PRIVATE_KEY"):
+        return "Missing EVM_PRIVATE_KEY environment variable"
+    try:
+        from web3 import Web3
+    except ImportError:
+        return "web3 not installed. Install with: pip install web3"
+    return None
+
+
+def get_evm_balance(adapter, token: str):
+    """
+    Get EVM token balance using WalletModule.
+
+    This test helper uses WalletModule for balance queries.
+
+    Args:
+        adapter: EVM adapter with _chain_id, _signer, _web3 attributes
+        token: Token symbol or address
+
+    Returns:
+        Balance in UI units (Decimal)
+    """
+    from dex_adapter_universal.types.evm_tokens import resolve_token_address, get_token_decimals, get_native_symbol
+
+    web3 = adapter._web3
+    address = adapter._signer.address
+    chain_id = adapter._chain_id
+
+    # Check if native token (ETH, BNB)
+    native_symbol = get_native_symbol(chain_id)
+    if token.upper() == native_symbol.upper():
+        balance_wei = web3.eth.get_balance(address)
+        return Decimal(balance_wei) / Decimal(10 ** 18)
+
+    # ERC20 token
+    token_address = resolve_token_address(token, chain_id)
+    decimals = get_token_decimals(token, chain_id)
+
+    # Minimal ERC20 ABI for balanceOf
+    erc20_abi = [{"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"}]
+
+    contract = web3.eth.contract(address=web3.to_checksum_address(token_address), abi=erc20_abi)
+    balance = contract.functions.balanceOf(address).call()
+    return Decimal(balance) / Decimal(10 ** decimals)
+
+
+def get_native_balance(adapter):
+    """Get native token balance (ETH/BNB) for an adapter using WalletModule"""
+    from dex_adapter_universal.types.evm_tokens import get_native_symbol
+    return get_evm_balance(adapter, get_native_symbol(adapter._chain_id))
+
+
+def get_token_balance(adapter, token: str):
+    """Get ERC20 token balance for an adapter using WalletModule"""
+    return get_evm_balance(adapter, token)
+
+
+@pytest.fixture(scope="module")
+def pancakeswap_adapter():
+    """Create PancakeSwapAdapter fixture for tests (BSC)"""
+    skip_msg = skip_if_no_evm_config()
+    if skip_msg:
+        pytest.skip(skip_msg)
+
+    from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
+    from dex_adapter_universal.infra.evm_signer import EVMSigner
+
+    signer = EVMSigner.from_env()
+    return PancakeSwapAdapter(chain_id=56, signer=signer)
+
+
+@pytest.fixture(scope="module")
+def uniswap_adapter():
+    """Create UniswapAdapter fixture for tests (Ethereum)"""
+    skip_msg = skip_if_no_evm_config()
+    if skip_msg:
+        pytest.skip(skip_msg)
+
+    from dex_adapter_universal.protocols.uniswap import UniswapAdapter
+    from dex_adapter_universal.infra.evm_signer import EVMSigner
+
+    signer = EVMSigner.from_env()
+    return UniswapAdapter(chain_id=1, signer=signer)
+
+
+# Alias for backwards compatibility with test files using 'adapter' parameter
+@pytest.fixture(scope="module")
+def adapter(request):
+    """
+    Generic adapter fixture that selects based on test file name.
+    - test_liquidity_pancakeswap.py -> PancakeSwapAdapter
+    - test_liquidity_uniswap.py -> UniswapAdapter
+    """
+    test_file = request.fspath.basename
+
+    if "pancakeswap" in test_file:
+        skip_msg = skip_if_no_evm_config()
+        if skip_msg:
+            pytest.skip(skip_msg)
+
+        from dex_adapter_universal.protocols.pancakeswap import PancakeSwapAdapter
+        from dex_adapter_universal.infra.evm_signer import EVMSigner
+
+        signer = EVMSigner.from_env()
+        return PancakeSwapAdapter(chain_id=56, signer=signer)
+
+    elif "uniswap" in test_file:
+        skip_msg = skip_if_no_evm_config()
+        if skip_msg:
+            pytest.skip(skip_msg)
+
+        from dex_adapter_universal.protocols.uniswap import UniswapAdapter
+        from dex_adapter_universal.infra.evm_signer import EVMSigner
+
+        signer = EVMSigner.from_env()
+        return UniswapAdapter(chain_id=1, signer=signer)
+
+    else:
+        pytest.skip(f"No adapter configured for {test_file}")

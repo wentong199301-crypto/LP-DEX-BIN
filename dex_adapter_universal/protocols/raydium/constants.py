@@ -40,15 +40,17 @@ METADATA_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 # Memo Program
 MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 
-# Wrapped SOL mint
-WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
+# Wrapped SOL mint - use centralized registry
+from dex_adapter_universal.types.solana_tokens import SOLANA_TOKEN_MINTS
+WRAPPED_SOL_MINT = SOLANA_TOKEN_MINTS["SOL"]
 
-# WSOL wrap safety buffer (in lamports = 0.00001 SOL)
+# WSOL wrap safety buffer - use config value
 # This extra amount covers:
 # - Rent-exempt minimum for the WSOL token account
 # - Any rounding differences during token transfers
 # Prevents "insufficient funds" errors at the margin
-WSOL_WRAP_BUFFER_LAMPORTS = 10000
+from dex_adapter_universal.config import config
+WSOL_WRAP_BUFFER_LAMPORTS = config.solana.wsol_wrap_buffer
 
 # Tick array size (Raydium CLMM uses 60 ticks per tick array)
 TICK_ARRAY_SIZE = 60

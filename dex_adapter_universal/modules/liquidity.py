@@ -1,7 +1,7 @@
 """
 Liquidity Module
 
-Provides LP position operations.
+Provides LP position operations with automatic retry for transient failures.
 """
 
 import logging
@@ -15,6 +15,7 @@ from ..types import Pool, Position, PriceRange, TxResult
 from ..protocols import ProtocolRegistry
 from ..errors import PositionNotFound, ConfigurationError
 from ..config import config
+from ..infra.retry import execute_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class LiquidityModule:
         amount0: Optional[Decimal] = None,
         amount1: Optional[Decimal] = None,
         amount_usd: Optional[Decimal] = None,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """
         Open new LP position
@@ -97,6 +98,10 @@ class LiquidityModule:
         if isinstance(pool, str):
             pool = self._client.market.pool(pool)
 
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = config.trading.default_lp_slippage_bps
+
         # Get adapter
         adapter = ProtocolRegistry.get(pool.dex, self._rpc)
 
@@ -109,114 +114,113 @@ class LiquidityModule:
                 pool, price_range, amount_usd
             )
 
-        # Build instructions (returns tuple of instructions and additional signers)
-        instructions, additional_signers = adapter.build_open_position(
-            pool=pool,
-            price_range=price_range,
-            amount0=amount0,
-            amount1=amount1,
-            owner=self.owner,
-            slippage_bps=slippage_bps,
-        )
+        def build_and_execute():
+            # Build instructions (returns tuple of instructions and additional signers)
+            instructions, additional_signers = adapter.build_open_position(
+                pool=pool,
+                price_range=price_range,
+                amount0=amount0,
+                amount1=amount1,
+                owner=self.owner,
+                slippage_bps=slippage_bps,
+            )
 
-        # Execute with additional signers (e.g., NFT mint for Raydium)
-        # Use LP-specific compute budget (configurable via TX_LP_COMPUTE_UNITS/TX_LP_COMPUTE_UNIT_PRICE)
-        return self._tx_builder.build_and_send(
-            instructions,
-            additional_signers=additional_signers,
-            compute_units=config.tx.lp_compute_units,
-            compute_unit_price=config.tx.lp_compute_unit_price,
-        )
-
-    def close(
-        self,
-        position: Union[Position, str],
-    ) -> TxResult:
-        """
-        Close position (remove all liquidity)
-
-        For Raydium: Uses multi-step close to avoid error 101 (ClosePositionErr).
-        Step 1: Remove all liquidity
-        Step 2: Claim fees/rewards
-        Step 3: Close the position (burn NFT)
-
-        Args:
-            position: Position object or ID
-
-        Returns:
-            TxResult
-        """
-        # Resolve position
-        if isinstance(position, str):
-            position = self.get_position(position)
-
-        # Get adapter
-        adapter = ProtocolRegistry.get(position.pool.dex, self._rpc)
-
-        # For Raydium, use multi-step close via adapter's generator
-        if position.pool.dex == "raydium" and hasattr(adapter, "generate_close_position_steps"):
-            return self._execute_multi_step_close(position, adapter)
-
-        # For other DEXes (Meteora), use single transaction
-        instructions = adapter.build_close_position(
-            position=position,
-            owner=self.owner,
-        )
-
-        # Execute with LP-specific compute budget
-        return self._tx_builder.build_and_send(
-            instructions,
-            compute_units=config.tx.lp_compute_units,
-            compute_unit_price=config.tx.lp_compute_unit_price,
-        )
-
-    def _execute_multi_step_close(
-        self,
-        position: Position,
-        adapter,
-    ) -> TxResult:
-        """
-        Execute multi-step close using adapter's generator.
-
-        Args:
-            position: Position to close
-            adapter: Protocol adapter with generate_close_position_steps method
-
-        Returns:
-            TxResult from the final close transaction
-        """
-        last_result = TxResult.skipped("No close steps generated")
-
-        for instructions, step_desc, is_final in adapter.generate_close_position_steps(
-            position=position,
-            owner=self.owner,
-        ):
-            logger.debug(f"Executing close step: {step_desc}")
-            result = self._tx_builder.build_and_send(
+            # Execute with additional signers (e.g., NFT mint for Raydium)
+            # Use LP-specific compute budget (configurable via TX_LP_COMPUTE_UNITS/TX_LP_COMPUTE_UNIT_PRICE)
+            return self._tx_builder.build_and_send(
                 instructions,
+                additional_signers=additional_signers,
                 compute_units=config.tx.lp_compute_units,
                 compute_unit_price=config.tx.lp_compute_unit_price,
             )
 
-            if is_final:
-                return result
+        return execute_with_retry(
+            build_and_execute,
+            f"open_position({pool.symbol})",
+        )
 
-            # For intermediate steps, log but continue on failure
-            if not result.is_success:
-                logger.debug(f"Step {step_desc} returned: {result.error}")
-            else:
-                logger.debug(f"Step {step_desc} completed: {result.signature}")
+    def close(
+        self,
+        position: Optional[Union[Position, str]] = None,
+        dex: Optional[str] = None,
+    ) -> Union[TxResult, List[TxResult]]:
+        """
+        Close position(s) (remove all liquidity)
 
-            last_result = result
+        Closes position(s) in single transaction(s):
+        - Remove all liquidity
+        - Claim fees/rewards
+        - Close the position (burn NFT for Raydium)
 
-        return last_result
+        Args:
+            position: Position object or ID (closes single position)
+            dex: DEX name (closes all positions on that DEX if position is None)
+
+        Returns:
+            TxResult for single position, List[TxResult] for multiple positions
+
+        Examples:
+            # Close a specific position
+            result = client.lp.close(position)
+
+            # Close all positions on a DEX
+            results = client.lp.close(dex="raydium")
+        """
+        # If position is provided, close single position
+        if position is not None:
+            if isinstance(position, str):
+                position = self.get_position(position)
+
+            adapter = ProtocolRegistry.get(position.pool.dex, self._rpc)
+
+            def build_and_execute():
+                instructions = adapter.build_close_position(
+                    position=position,
+                    owner=self.owner,
+                )
+                return self._tx_builder.build_and_send(
+                    instructions,
+                    compute_units=config.tx.lp_compute_units,
+                    compute_unit_price=config.tx.lp_compute_unit_price,
+                )
+
+            return execute_with_retry(
+                build_and_execute,
+                f"close_position({position.id})",
+            )
+
+        # If dex is provided, close all positions on that DEX
+        if dex is not None:
+            positions = self.positions(dex=dex)
+
+            if not positions:
+                logger.info(f"No positions to close on {dex}")
+                return []
+
+            results = []
+            for pos in positions:
+                logger.info(f"Closing position {pos.id[:16]}... on {pos.dex}")
+                try:
+                    result = self.close(position=pos)
+                    results.append(result)
+                    if result.is_success:
+                        logger.info(f"  Closed: {result.signature}")
+                    else:
+                        logger.warning(f"  Failed: {result.error}")
+                except Exception as e:
+                    logger.error(f"  Error closing position {pos.id}: {e}")
+                    results.append(TxResult.failed(str(e)))
+
+            return results
+
+        raise ConfigurationError.missing("position or dex")
 
     def add(
         self,
         position: Union[Position, str],
         amount0: Decimal,
         amount1: Decimal,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """
         Add liquidity to existing position
@@ -233,30 +237,40 @@ class LiquidityModule:
         if isinstance(position, str):
             position = self.get_position(position)
 
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = config.trading.default_lp_slippage_bps
+
         adapter = ProtocolRegistry.get(position.pool.dex, self._rpc)
 
-        instructions = adapter.build_add_liquidity(
-            position=position,
-            amount0=amount0,
-            amount1=amount1,
-            owner=self.owner,
-            slippage_bps=slippage_bps,
-        )
+        def build_and_execute():
+            instructions = adapter.build_add_liquidity(
+                position=position,
+                amount0=amount0,
+                amount1=amount1,
+                owner=self.owner,
+                slippage_bps=slippage_bps,
+            )
 
-        if not instructions:
-            return TxResult.skipped("No liquidity to add (zero amounts or missing position data)")
+            if not instructions:
+                return TxResult.skipped("No liquidity to add (zero amounts or missing position data)")
 
-        return self._tx_builder.build_and_send(
-            instructions,
-            compute_units=config.tx.lp_compute_units,
-            compute_unit_price=config.tx.lp_compute_unit_price,
+            return self._tx_builder.build_and_send(
+                instructions,
+                compute_units=config.tx.lp_compute_units,
+                compute_unit_price=config.tx.lp_compute_unit_price,
+            )
+
+        return execute_with_retry(
+            build_and_execute,
+            f"add_liquidity({position.id})",
         )
 
     def remove(
         self,
         position: Union[Position, str],
         percent: float = 100.0,
-        slippage_bps: int = 50,
+        slippage_bps: Optional[int] = None,
     ) -> TxResult:
         """
         Remove liquidity from position
@@ -272,22 +286,32 @@ class LiquidityModule:
         if isinstance(position, str):
             position = self.get_position(position)
 
+        # Use config default if not specified
+        if slippage_bps is None:
+            slippage_bps = config.trading.default_lp_slippage_bps
+
         adapter = ProtocolRegistry.get(position.pool.dex, self._rpc)
 
-        instructions = adapter.build_remove_liquidity(
-            position=position,
-            liquidity_percent=percent,
-            owner=self.owner,
-            slippage_bps=slippage_bps,
-        )
+        def build_and_execute():
+            instructions = adapter.build_remove_liquidity(
+                position=position,
+                liquidity_percent=percent,
+                owner=self.owner,
+                slippage_bps=slippage_bps,
+            )
 
-        if not instructions:
-            return TxResult.skipped("No liquidity to remove (zero liquidity or missing position data)")
+            if not instructions:
+                return TxResult.skipped("No liquidity to remove (zero liquidity or missing position data)")
 
-        return self._tx_builder.build_and_send(
-            instructions,
-            compute_units=config.tx.lp_compute_units,
-            compute_unit_price=config.tx.lp_compute_unit_price,
+            return self._tx_builder.build_and_send(
+                instructions,
+                compute_units=config.tx.lp_compute_units,
+                compute_unit_price=config.tx.lp_compute_unit_price,
+            )
+
+        return execute_with_retry(
+            build_and_execute,
+            f"remove_liquidity({position.id})",
         )
 
     def claim(
@@ -308,25 +332,31 @@ class LiquidityModule:
 
         adapter = ProtocolRegistry.get(position.pool.dex, self._rpc)
 
-        instructions = adapter.build_claim_fees(
-            position=position,
-            owner=self.owner,
-        )
+        def build_and_execute():
+            instructions = adapter.build_claim_fees(
+                position=position,
+                owner=self.owner,
+            )
 
-        # Add reward claim if supported
-        reward_instructions = adapter.build_claim_rewards(
-            position=position,
-            owner=self.owner,
-        )
-        instructions.extend(reward_instructions)
+            # Add reward claim if supported
+            reward_instructions = adapter.build_claim_rewards(
+                position=position,
+                owner=self.owner,
+            )
+            instructions.extend(reward_instructions)
 
-        if not instructions:
-            return TxResult.skipped("Nothing to claim")
+            if not instructions:
+                return TxResult.skipped("Nothing to claim")
 
-        return self._tx_builder.build_and_send(
-            instructions,
-            compute_units=config.tx.lp_compute_units,
-            compute_unit_price=config.tx.lp_compute_unit_price,
+            return self._tx_builder.build_and_send(
+                instructions,
+                compute_units=config.tx.lp_compute_units,
+                compute_unit_price=config.tx.lp_compute_unit_price,
+            )
+
+        return execute_with_retry(
+            build_and_execute,
+            f"claim_fees({position.id})",
         )
 
     def positions(

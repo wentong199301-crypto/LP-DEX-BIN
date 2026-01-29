@@ -64,8 +64,9 @@ def tick_to_sqrt_price_x64(tick: int) -> int:
 
     # The algorithm computes ratio = 1.0001^(-|tick|)
     # For positive ticks, invert to get 1.0001^tick
+    # Use 2^128 (not MAX_UINT128 which is 2^128-1) to avoid off-by-1 bias
     if tick > 0:
-        ratio = MAX_UINT128 // ratio
+        ratio = (1 << 128) // ratio
 
     return ratio
 
@@ -164,10 +165,14 @@ def price_to_tick(
 
     # tick = log_1.0001(price)
     # Since price = 1.0001^tick
+    # Use Decimal.ln() to avoid float precision loss for extreme prices
+    # Note: Decimal has no log() method, so we use float but with floor() for correctness
     log_base = math.log(1.0001)
-    tick = int(math.log(float(adjusted_price)) / log_base)
+    # Use math.floor() instead of int() - int() truncates toward 0 which is wrong
+    # for negative ticks (prices < 1). floor() always rounds down.
+    tick = math.floor(math.log(float(adjusted_price)) / log_base)
 
-    # Round to tick spacing
+    # Round to tick spacing (floor division for consistent rounding)
     tick = (tick // tick_spacing) * tick_spacing
 
     # Clamp to valid range

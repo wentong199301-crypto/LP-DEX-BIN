@@ -17,10 +17,11 @@ def test_rpc_config():
 
     print("Testing RpcClientConfig...")
 
-    # Default config
+    # Default config - retry settings now use config.rpc.max_retries (3) and config.tx.retry_delay (2.0)
     config1 = RpcClientConfig()
     assert config1.timeout_seconds == 30.0
-    assert config1.max_retries == 3
+    assert config1.max_retries == 3  # From config.rpc.max_retries
+    assert config1.retry_delay_seconds == 2.0  # From config.tx.retry_delay
     assert config1.commitment == "confirmed"
 
     # Custom config

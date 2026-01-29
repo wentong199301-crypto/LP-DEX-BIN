@@ -11,6 +11,8 @@ from pathlib import Path
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from dex_adapter_universal.types.solana_tokens import SOLANA_TOKEN_MINTS
+
 
 def test_token():
     """Test Token dataclass"""
@@ -20,13 +22,13 @@ def test_token():
 
     # Create token
     sol = Token(
-        mint="So11111111111111111111111111111111111111112",
+        mint=SOLANA_TOKEN_MINTS["SOL"],
         symbol="SOL",
         decimals=9,
         name="Solana",
     )
 
-    assert sol.mint == "So11111111111111111111111111111111111111112"
+    assert sol.mint == SOLANA_TOKEN_MINTS["SOL"]
     assert sol.symbol == "SOL"
     assert sol.decimals == 9
     assert sol.name == "Solana"
