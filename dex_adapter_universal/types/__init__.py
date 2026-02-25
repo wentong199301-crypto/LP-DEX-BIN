@@ -6,7 +6,7 @@ from .common import Token, STABLECOINS
 from .pool import Pool
 from .position import Position
 from .price import PriceRange, RangeMode
-from .result import TxResult, TxStatus, QuoteResult
+from .result import TxResult, TxStatus, QuoteResult, OpenPositionResult, ClosePositionResult, SwapResult
 
 # EVM token types
 from .evm_tokens import (
@@ -45,6 +45,9 @@ __all__ = [
     "TxResult",
     "TxStatus",
     "QuoteResult",
+    "OpenPositionResult",
+    "ClosePositionResult",
+    "SwapResult",
     # EVM types
     "EVMChain",
     "EVMToken",

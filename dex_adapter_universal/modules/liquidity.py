@@ -5,13 +5,14 @@ Provides LP position operations with automatic retry for transient failures.
 """
 
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..client import DexClient
 
-from ..types import Pool, Position, PriceRange, TxResult
+from ..types import Pool, Position, PriceRange, TxResult, OpenPositionResult, ClosePositionResult
 from ..protocols import ProtocolRegistry
 from ..errors import PositionNotFound, ConfigurationError
 from ..config import config

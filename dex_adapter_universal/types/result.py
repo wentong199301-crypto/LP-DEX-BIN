@@ -221,3 +221,41 @@ class ClosePositionResult:
     @property
     def is_success(self) -> bool:
         return self.tx_result.is_success
+
+
+@dataclass
+class SwapResult:
+    """
+    Result of executing a swap
+
+    Attributes:
+        tx_result: Transaction result
+        from_token: Input token mint
+        to_token: Output token mint
+        amount_in: Input amount
+        amount_out: Output amount
+        execution_price: Actual execution price
+        expected_price: Expected price from quote
+        slippage_bps: Actual slippage in basis points
+        price_impact_bps: Price impact in basis points
+    """
+    tx_result: TxResult
+    from_token: str = ""
+    to_token: str = ""
+    amount_in: Decimal = Decimal(0)
+    amount_out: Decimal = Decimal(0)
+    execution_price: Decimal = Decimal(0)
+    expected_price: Decimal = Decimal(0)
+    slippage_bps: Decimal = Decimal(0)
+    price_impact_bps: Decimal = Decimal(0)
+
+    @property
+    def is_success(self) -> bool:
+        return self.tx_result.is_success
+    
+    @property
+    def effective_slippage_pct(self) -> float:
+        """Calculate effective slippage percentage"""
+        if self.expected_price == 0:
+            return 0.0
+        return float((self.expected_price - self.execution_price) / self.expected_price * 100)

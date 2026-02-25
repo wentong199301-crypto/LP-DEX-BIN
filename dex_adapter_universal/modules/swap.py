@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Optional, Union
 if TYPE_CHECKING:
     from ..client import DexClient
 
-from ..types import QuoteResult, TxResult
+from ..types import QuoteResult, TxResult, SwapResult
 from ..protocols.jupiter import JupiterAdapter
 from ..protocols.oneinch import OneInchAdapter
 from ..infra.evm_signer import EVMSigner, create_web3
@@ -184,7 +184,7 @@ class SwapModule:
         slippage_bps: Optional[int] = None,
         wait_confirmation: bool = True,
         chain: Union[str, Chain] = Chain.SOLANA,
-    ) -> TxResult:
+    ) -> SwapResult:
         """
         Quote and execute swap in one call
 
@@ -197,7 +197,7 @@ class SwapModule:
             chain: Blockchain to swap on ("solana", "eth", "bsc")
 
         Returns:
-            TxResult with transaction status
+            SwapResult with transaction status and execution details
 
         Examples:
             # Swap on Solana (uses Jupiter)
@@ -212,17 +212,46 @@ class SwapModule:
         resolved_chain = self._resolve_chain(chain)
         actual_slippage = slippage_bps if slippage_bps is not None else config.trading.default_slippage_bps
 
+        # Get quote first (for expected price)
+        quote = self.quote(from_token, to_token, amount, slippage_bps=actual_slippage, chain=chain)
+        expected_price = quote.exchange_rate
+
         if resolved_chain == Chain.SOLANA:
             adapter = self._get_jupiter_adapter()
         else:
             adapter = self._get_oneinch_adapter(resolved_chain.chain_id, require_signer=True)
 
-        return adapter.swap(
+        # Execute swap
+        tx_result = adapter.swap(
             from_token=from_token,
             to_token=to_token,
             amount=amount,
             slippage_bps=actual_slippage,
             wait_confirmation=wait_confirmation,
+        )
+
+        # Calculate actual execution metrics
+        # Note: For accurate amount_out, we'd need to parse transaction logs
+        # Here we use quote.to_amount as approximation
+        # In production, this should be fetched from actual transaction output
+        execution_price = expected_price  # Placeholder - should be calculated from actual output
+        
+        # Calculate slippage
+        if expected_price > 0:
+            slippage = (expected_price - execution_price) / expected_price * 10000  # in bps
+        else:
+            slippage = Decimal(0)
+
+        return SwapResult(
+            tx_result=tx_result,
+            from_token=from_token,
+            to_token=to_token,
+            amount_in=amount,
+            amount_out=Decimal(quote.to_amount),  # Should be actual output from tx
+            execution_price=execution_price,
+            expected_price=expected_price,
+            slippage_bps=slippage,
+            price_impact_bps=Decimal(quote.price_impact * 10000),  # Convert to bps
         )
 
     def estimate_output(
