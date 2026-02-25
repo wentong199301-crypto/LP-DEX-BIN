@@ -657,6 +657,15 @@ class UniswapAdapter:
         else:
             self._rpc_url = global_config.uniswap.eth_rpc_url
 
+        # Validate RPC URL
+        if not self._rpc_url or not self._rpc_url.strip():
+            raise ConfigurationError.missing(
+                "ETH_RPC_URL",
+                "Ethereum RPC URL is required for UniswapAdapter. "
+                "Please set ETH_RPC_URL environment variable or pass rpc_url parameter. "
+                "Example: ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY"
+            )
+
         # Initialize web3
         self._web3 = create_web3(self._rpc_url, chain_id)
 

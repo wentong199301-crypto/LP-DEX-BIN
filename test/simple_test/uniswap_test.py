@@ -146,11 +146,36 @@ def main():
     print("Chain: Ethereum (Chain ID 1)")
     print()
 
-    # Check EVM config
+    # Import config first to ensure .env file is loaded
+    from dex_adapter_universal.config import config
     import os
+    
+    # Debug: Check if .env is loaded
+    # Try to reload .env explicitly
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        project_root = Path(__file__).parent.parent.parent
+        env_file = project_root / ".env"
+        if env_file.exists():
+            load_dotenv(env_file, override=True)  # override=True to reload from .env
+    except ImportError:
+        pass  # dotenv not available
+
+    # Check EVM config
     if not os.getenv("EVM_PRIVATE_KEY"):
         print("\nSKIPPED: Missing EVM_PRIVATE_KEY")
         return True
+
+    # Check RPC URL (from config or env)
+    rpc_url = config.uniswap.eth_rpc_url or os.getenv("ETH_RPC_URL")
+    if not rpc_url or not rpc_url.strip():
+        print("\nERROR: Missing ETH_RPC_URL environment variable")
+        print(f"  config.uniswap.eth_rpc_url: {repr(config.uniswap.eth_rpc_url)}")
+        print(f"  os.getenv('ETH_RPC_URL'): {repr(os.getenv('ETH_RPC_URL'))}")
+        print("Please set ETH_RPC_URL in .env file or as environment variable")
+        print("Example: ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY")
+        return False
 
     try:
         from web3 import Web3
@@ -159,7 +184,16 @@ def main():
         return True
 
     print("Creating UniswapAdapter...")
-    adapter = create_adapter()
+    try:
+        adapter = create_adapter()
+    except Exception as e:
+        if "Invalid URL" in str(e) or "No scheme supplied" in str(e):
+            print(f"\nERROR: Invalid RPC URL configuration")
+            print(f"Details: {e}")
+            print("\nPlease check your ETH_RPC_URL environment variable")
+            print("Example: ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY")
+            return False
+        raise
     print(f"  Wallet: {adapter.address}")
     print()
 

@@ -29,7 +29,9 @@ def _load_env_file():
     env_file = current / ".env"
 
     if env_file.exists():
-        load_dotenv(env_file)
+        # Use override=True to ensure .env values override existing env vars
+        # This is important if env vars are set but empty
+        load_dotenv(env_file, override=True)
 
 
 # Load .env on module import
